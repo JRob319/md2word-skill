@@ -12,6 +12,7 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 - **Zotero 桌面版**：正在运行（pyzotero 需要本地 API）
 - **依赖**：pandoc 2.11+（`--citeproc`）、pyzotero、python-docx、lxml、bibtexparser
 
+> **渐进式读取**：下面每个 Step 的详细说明独立完整。执行到哪步就读哪步，不要一次性读完所有步骤。
 ## 工作流程
 
 > **输出约定**：所有中间文件和最终输出默认保存到 md 与 bib 文件所在同一目录（下文记为 `OUTDIR`），除非用户指定其他路径。最终文件名：`<md文件名>_zotero.docx`。
@@ -19,14 +20,14 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 > **执行约定**：每一步必须**单独运行**并在终端打印该步骤的进度和结果后再进入下一步。禁止将多步合并为一条命令静默执行。每步执行前用 `echo` 或 `print` 显示当前步骤编号和目标。
 
 ```
-Step 1  收集参数 (md_file, bib_file, collection, csl_style)
-Step 2  依赖检查 + 交叉验证 + 双来源文献核查
-    ↓ 仅 PASS 条目继续
-Step 3  创建 Zotero Collection + 导入已验证文献
-Step 4  构建 cite_key → Zotero item key 映射
-Step 5  pandoc MD → Word (指定 CSL 样式)
-Step 6  注入 Zotero field codes (根据 citation-format 适配)
-```
+快速路径（默认）:  Step 1 → 2a+2b → 3 → 4 → 5 → 6    ≈ 40s
+完整路径（--verify）: Step 1 → 2a+2b+2c → 3 → 4 → 5 → 6  ≈ 100-180s
+    ```
+
+- **快速路径**：跳过 Step 2c（双来源文献核查），直接导入。适合信任 BIB 质量的场景。
+- **完整路径**：运行 S2 + CrossRef 双源核查，仅导入 PASS 条目。适合投稿前终审。
+- 用户未明确要求时，**默认走快速路径**。
+- 用户说「核查」「验证文献」「verify」时，走完整路径。
 
 ---
 
