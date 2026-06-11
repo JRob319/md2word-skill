@@ -30,39 +30,79 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 - user_id:    Zotero user ID（默认：3313474）
 ```
 
-### Step 2: 检查依赖与编码预检
+### Step 2: 依赖检查 + 交叉验证
 
-运行以下命令确认环境就绪：
+**2a. 检查依赖**：
 ```bash
-# 检查 Zotero 是否运行（pyzotero 能否连接）
 python3 -c "from pyzotero import zotero; zot = zotero.Zotero(0, 'user', local=True); print(len(zot.collections()), 'collections')" 2>&1
-# 检查 pandoc
 pandoc --version | head -1
 ```
+Zotero 未运行则提示启动后重试。
 
-如果 Zotero 未运行，提示用户先启动 Zotero 后重试。
+**2b. MD ↔ BIB 交叉验证**（在进入 Step 3 之前执行）：
 
-**编码预检**（在进入 Step 3 之前执行）：
-```bash
-file -I BIB_FILE  # 检测实际编码
-file -I MD_FILE
+用 MD 的引用和 BIB 的条目做双向校验，提前发现问题：
+```python
+import bibtexparser, re
+
+def cross_validate(md_path, bib_path):
+    # 提取 MD 中所有 [@citekey]
+    with open(md_path, encoding='utf-8') as f:
+        md_text = f.read()
+    md_keys = set(re.findall(r'\[@([\w-]+)', md_text))
+
+    # 提取 BIB 中所有 entry ID
+    with open(bib_path, encoding='utf-8') as f:
+        db = bibtexparser.load(f)
+    bib_keys = {e['ID']: e for e in db.entries}
+
+    # ① 致命：MD 引用了但 BIB 没有 → pandoc 会渲染失败
+    missing_in_bib = md_keys - set(bib_keys.keys())
+
+    # ② 警告：BIB 有但 MD 没引用 → 冗余条目
+    unused_in_md = set(bib_keys.keys()) - md_keys
+
+    # ③ 信息：匹配上的条目中，缺 DOI 的 → 只能走标题 fallback
+    matched = md_keys & set(bib_keys.keys())
+    no_doi = [k for k in matched if not bib_keys[k].get('doi', '').strip()]
+
+    # ④ 信息：缺 title 的 → 无法做任何匹配
+    no_title = [k for k in matched if not bib_keys[k].get('title', '').strip()]
+
+    return {
+        'md_total': len(md_keys),
+        'bib_total': len(bib_keys),
+        'missing_in_bib': sorted(missing_in_bib),   # 必须修复
+        'unused_in_md': sorted(unused_in_md),       # 可选清理
+        'no_doi': sorted(no_doi),                   # 走标题 fallback
+        'no_title': sorted(no_title),               # 无法匹配
+    }
 ```
-如果 BIB 文件编码不是 UTF-8，先转码：
-```bash
-iconv -f GBK -t UTF-8 ORIGINAL.bib > /tmp/converted.bib
-# 后续步骤使用 /tmp/converted.bib 代替原始文件
+
+**检查点**：展示交叉验证报告——
 ```
-记录转码路径，后续所有步骤使用转码后的文件。
+交叉验证报告
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  MD 引用数: 50    BIB 条目数: 58
+  ✅ 匹配: 48
 
-**DOI 覆盖率预检**：
-```bash
-grep -ci 'doi' BIB_FILE  # 粗略统计含 DOI 的条目数
-grep -c '^@' BIB_FILE    # 总条目数
+❌ MD 引用了但 BIB 缺少 (2):     ← 必须修复
+   - smith2023missing
+   - jones2024typo
+
+⚠️  BIB 有但 MD 未引用 (10):      ← 可选清理
+   - ronneberger2015unet, ... 等 10 条
+
+ℹ️  无 DOI 走标题匹配 (36):       ← 提醒
+   36/48 匹配条目无 DOI，将走标题 fallback
+
+❌ 无 title 无法匹配 (0)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
-如果 DOI 覆盖率低于 50%，**警告用户**：「当前 BIB 文件仅 XX% 的条目有 DOI，大部分引用将依赖标题模糊匹配，准确率可能下降。建议在 Zotero 中让插件自动补全 DOI。」
 
-**暂停等用户确认**（如果编码需要转码或 DOI 覆盖率 < 50%）。
-
+- 如果 `missing_in_bib` 不为空 → **暂停，等用户补全 BIB 或修正 cite key**
+- 如果 `no_title` 不为空 → **暂停，等用户补全 title**
+- 其余情况正常继续
 ### Step 3: 导入 BIB → Zotero（如不存在）
 
 先检查目标 collection 是否已存在：
