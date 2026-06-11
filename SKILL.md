@@ -15,6 +15,18 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 
 ## 工作流程（6 步）
 
+```
+Step 1  收集参数 (md_file, bib_file, collection)
+Step 2a 检查依赖 (Zotero, pandoc)
+Step 2b MD↔BIB 交叉验证 (内部一致性)
+Step 2c 双来源文献真实性核查 (S2 + CrossRef)
+    ↓
+Step 3  创建 Zotero Collection + 导入已验证文献
+Step 4  构建 cite_key → Zotero item key 映射
+Step 5  pandoc MD → Word
+Step 6  注入 Zotero CSL_CITATION field codes
+```
+
 ### Step 1: 收集参数
 
 向用户确认以下信息（如果未提供）：
@@ -220,50 +232,186 @@ def dual_verify(bib_entry, s2_result, crossref_result):
 
 > **为什么需要双来源**：单一来源可能覆盖不全（S2 偏 CS，CrossRef 偏期刊/书籍），或本身数据有错。两个独立来源都确认，才能可靠判断文献真实存在且信息无误。
 > Semantic Scholar API 需要 `SEMANTIC_SCHOLAR_API_KEY`，CrossRef API 免费无需 key。
-### Step 3: 导入 BIB → Zotero（如不存在）
+### Step 3: 创建 Zotero Collection + 导入已验证文献
 
-先检查目标 collection 是否已存在：
+Step 2c 双来源核查通过后，只将 **PASS** 状态的文献导入 Zotero。
+
+**3a. 新建 Collection**：
 ```python
 from pyzotero import zotero
 zot = zotero.Zotero(0, 'user', local=True)
+
+# 检查是否已存在同名 collection
 collections = zot.collections()
-target = None
+target_key = None
 for c in collections:
     if c['data']['name'] == COLLECTION_NAME:
-        target = c
+        target_key = c['key']
         break
+
+if not target_key:
+    # 创建新 collection
+    resp = zot.create_collection({'name': COLLECTION_NAME})
+    target_key = resp['successful']['0']['key']
+    print(f'✅ 已创建 collection: {COLLECTION_NAME} (key={target_key})')
+else:
+    print(f'ℹ️  collection 已存在: {COLLECTION_NAME} (key={target_key})')
 ```
 
-如果不存在，**提示用户在 Zotero 中手动导入**（File → Import → 选择 BIB 文件 → 移到对应 collection）。pyzotero 的条目创建格式复杂且容易出错，手动导入更可靠。
+**3b. 导入已验证文献**（仅 PASS 条目）：
 
-然后告诉用户：**"请在 Zotero 中导入 BIB 文件并放入 collection，完成后回复'已导入'继续。"**
-
-用户确认后，获取 collection 中所有条目，构建查找表：
+用 pyzotero 批量创建条目，优先使用 DOI（Zotero 会自动补全元数据）：
 ```python
-items = zot.collection_items(collection_key)
-doi_to_key = {}
-title_to_key = {}
-for item in items:
-    d = item['data']
-    key = d['key']
-    if 'DOI' in d and d['DOI']:
-        doi_to_key[d['DOI'].lower().strip()] = key
-    title_to_key[d.get('title', '').lower().strip()] = key
+def import_verified(bib_entries, verify_results, collection_key):
+    """将双来源核查通过的 BIB 条目导入 Zotero collection"""
+    imported = []
+    skipped = []
+
+    for entry in bib_entries:
+        cite_key = entry['ID']
+        status = verify_results.get(cite_key, {}).get('status')
+
+        # 仅导入 PASS 的条目
+        if status != 'PASS':
+            skipped.append(f"{cite_key} ({status})")
+            continue
+
+        doi = entry.get('doi', '').strip()
+        title = entry.get('title', '').strip()
+
+        # 优先用 DOI：Zotero 会自动通过 DOI 补全所有字段
+        if doi:
+            template = zot.item_template('journalArticle')
+            template['DOI'] = doi
+            template['title'] = title  # fallback 显示
+            template['creators'] = []  # DOI 会自动填充
+        else:
+            # 无 DOI：用标题创建，手动填入 BIB 中的元数据
+            template = zot.item_template('journalArticle')
+            template['title'] = title
+            template['date'] = entry.get('year', '')
+            # 解析作者
+            for author_str in entry.get('author', '').split(' and '):
+                parts = author_str.strip().split(',')
+                if len(parts) >= 2:
+                    template['creators'].append({
+                        'creatorType': 'author',
+                        'lastName': parts[0].strip(),
+                        'firstName': parts[1].strip()
+                    })
+                elif parts[0].strip():
+                    template['creators'].append({
+                        'creatorType': 'author',
+                        'name': parts[0].strip()
+                    })
+
+        resp = zot.create_items([template])
+        if resp.get('successful'):
+            item_key = resp['successful']['0']['key']
+            zot.addto_collection(item_key, collection_key)
+            imported.append(cite_key)
+        else:
+            skipped.append(f"{cite_key} (导入失败)")
+
+    return imported, skipped
 ```
 
-### Step 4: 构建映射
-
-从 BIB 文件和 MD 文件构建 `pandoc编号 → Zotero item key` 映射。这一步是整个流程的关键——pandoc 按首次出现顺序编号，脚本需要知道每个编号对应哪个 Zotero 条目。
-
+**3c. 等待 Zotero 同步**：
+```bash
+# Zotero 需要时间处理 DOI 并补全元数据
+sleep 10
+# 确认 collection 中的条目数
+python3 -c "
+from pyzotero import zotero
+zot = zotero.Zotero(0, 'user', local=True)
+items = zot.collection_items('{target_key}')
+print(f'collection 中条目数: {len(items)}')
+"
 ```
-2. 匹配逻辑（优先级）：
-   - **DOI 精确匹配**：`bib_doi.lower() == zotero_doi.lower()`（最可靠）
-   - **标题模糊匹配**：去除标点和空格后比较，`re.sub(r'[^\w]', '', bib_title) == re.sub(r'[^\w]', '', zotero_title)`（fallback）
-3. **检查点**：输出未匹配的 cite_key 列表。
+
+**检查点**：展示导入报告——
+```
+文献导入报告
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  已导入: 45    跳过: 5 (WARN/FAIL/SKIP)
+
+  ✅ 已导入 (45):
+     isensee2018nnunet, ronneberger2015unet, kendall2017uncertainties, ...
+
+  ⏭ 跳过 (5):
+     - wahid2024aiuq (SKIP - 两源均未找到)
+     - smith2023fake (FAIL - 文献不存在)
+     - ...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**用户确认**：确认导入数量和跳过列表是否合理。确认后继续。
+
+> **为什么只导入 PASS 条目**：FAIL/SKIP 的文献真实性存疑，导入 Zotero 会污染文献库。用户可在 WARN 条目中选择性手动导入。
+
+### Step 4: 构建 cite_key → Zotero item key 映射
+
+从 Step 3 创建的 collection 中查找条目，不需要全库搜索：
+
+```python
+def build_mapping(md_path, bib_path, collection_key):
+    import bibtexparser, re
+    from pyzotero import zotero
+
+    zot = zotero.Zotero(0, 'user', local=True)
+
+    # 从 MD 提取引用顺序
+    with open(md_path, encoding='utf-8') as f:
+        md_text = f.read()
+    cite_keys = re.findall(r'\[@([\w-]+)', md_text)
+    # 按首次出现顺序编号，去重
+    seen = {}
+    for ck in cite_keys:
+        if ck not in seen:
+            seen[ck] = len(seen) + 1
+
+    # 从 collection 中获取所有条目
+    items = zot.collection_items(collection_key)
+
+    # 用 BIB 文件的 DOI/title 做桥梁：cite_key → (doi, title) → Zotero item
+    with open(bib_path, encoding='utf-8') as f:
+        db = bibtexparser.load(f)
+    bib_map = {e['ID']: {'doi': e.get('doi','').strip(), 'title': e.get('title','').strip()} for e in db.entries}
+
+    mapping = {}
+    unmatched = []
+    for ck, pandoc_num in seen.items():
+        bib_info = bib_map.get(ck, {})
+        found = False
+
+        # 优先 DOI 精确匹配
+        if bib_info.get('doi'):
+            for item in items:
+                item_doi = item['data'].get('DOI', '').strip().lower()
+                if item_doi == bib_info['doi'].lower():
+                    mapping[str(pandoc_num)] = item['key']
+                    found = True
+                    break
+
+        # fallback: 标题模糊匹配
+        if not found and bib_info.get('title'):
+            norm_bib = re.sub(r'[^\w]', '', bib_info['title']).lower()
+            for item in items:
+                norm_zot = re.sub(r'[^\w]', '', item['data'].get('title', '')).lower()
+                if norm_bib == norm_zot:
+                    mapping[str(pandoc_num)] = item['key']
+                    found = True
+                    break
+
+        if not found:
+            unmatched.append(ck)
+
+    return mapping, unmatched
+```
+
+2. **检查点**：输出未匹配的 cite_key 列表。
    - 如果未匹配数 > 0：**暂停，展示未匹配列表，等用户决定**（手动指定 / 忽略 / 中止）
    - 如果全部匹配：继续
-4. 解析 MD 中 `[@citekey]` 的出现顺序，确定 cite_key → pandoc_number
-5. 合并：`pandoc_number → Zotero item key`
 
 保存映射到临时 JSON 文件供脚本使用。格式：`{"1": "J8K6WXE8", "2": "7SU3QAU9", ...}`
 
