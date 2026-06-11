@@ -62,7 +62,7 @@ Step 6  注入 Zotero field codes (根据 citation-format 适配)
 | collection | — | BIB 文件名去掉扩展名 | 静默使用默认 |
 | output | — | `OUTDIR/<md文件名>_zotero.docx` | 静默使用默认 |
 | user_id | — | `0`（本地 Zotero） | 静默使用默认 |
-| csl_style | — | `physics-in-medicine-and-biology` | 静默使用默认 |
+| csl_style | ✅ | `physics-in-medicine-and-biology` | 用户未指定则使用默认 |
 
 #### 1b. 文件预检
 确认文件存在且格式正确：
