@@ -1,61 +1,93 @@
 #!/usr/bin/env python3
 """
-inject_zotero.py — Replace static numbered citations in a Word document
+inject_zotero.py — Replace static citations in a Word document
 with Zotero ADDIN CSL_CITATION field codes.
+
+Auto-detects citation format from CSL file:
+  - author-date → match (Author, Year) text patterns
+  - numeric     → match superscript/bracket number patterns
+  - note        → match footnote reference patterns
 
 Usage:
     python3 inject_zotero.py \
         --input /tmp/pandoc_output.docx \
         --output final_zotero.docx \
         --mapping /tmp/citation_mapping.json \
-        --user-id 3313474
+        --csl ~/.claude/skills/md2word-skill/styles/institute-of-physics-harvard.csl \
+        --bib references.bib \
+        --user-id 6653483
 
-Mapping JSON format:
-    {
-        "1": "J8K6WXE8",
-        "2": "7SU3QAU9",
-        "3": "4BC6W52P",
-        ...
-    }
-    Keys are pandoc citation numbers (strings), values are Zotero item keys.
+Mapping JSON format (numeric mode):
+    {"1": "J8K6WXE8", "2": "7SU3QAU9", ...}
+    Keys are pandoc citation numbers, values are Zotero item keys.
+
+Mapping JSON format (author-date mode):
+    {"kendall2017uncertainties": "J8K6WXE8", "gal2016dropout": "7SU3QAU9", ...}
+    Keys are cite_keys, values are Zotero item keys.
 """
 
 import argparse
 import json
+import os
 import random
+import re
 import string
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from lxml import etree
 from docx import Document
 from docx.oxml.ns import qn
 
-# ── Regex ───────────────────────────────────────────────────────────────
 
-CITATION_RE = r'^(\d+(?:\s*,\s*\d+)*)$'
+# ── CSL format detection ─────────────────────────────────────────────
 
-import re
-CITATION_PATTERN = re.compile(CITATION_RE)
+def detect_csl_format(csl_path):
+    """Read citation-format from CSL XML. Returns 'author-date', 'numeric', 'note', or 'label'."""
+    tree = ET.parse(csl_path)
+    root = tree.getroot()
+    ns = {'csl': 'http://purl.org/net/xbiblio/csl'}
+    for cat in root.findall('.//csl:category', ns):
+        fmt = cat.get('citation-format')
+        if fmt:
+            return fmt
+    # Check dependent style: follow independent-parent link
+    for link in root.findall('.//{http://purl.org/net/xbiblio/csl}link'):
+        if link.get('rel') == 'independent-parent':
+            parent_href = link.get('href', '')
+            parent_name = parent_href.split('/')[-1]
+            styles_dir = os.path.dirname(csl_path)
+            parent_path = os.path.join(styles_dir, f'{parent_name}.csl')
+            if os.path.isfile(parent_path):
+                return detect_csl_format(parent_path)
+    return 'author-date'  # default
 
-# ── Helpers ─────────────────────────────────────────────────────────────
 
+# ── Helpers ───────────────────────────────────────────────────────────
 
 def random_citation_id(length=8):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 
-def build_csl_citation(citation_nums, user_id, citation_map):
-    """Build the CSL_CITATION JSON payload."""
+def build_csl_citation(item_key, user_id, cite_key=None):
+    """Build a single-item CSL_CITATION JSON payload."""
+    uri = f"http://zotero.org/users/local/{user_id}/items/{item_key}"
+    citation_items = [{"uris": [uri]}]
+    return json.dumps({
+        "citationID": random_citation_id(),
+        "properties": {"noteIndex": 0},
+        "citationItems": citation_items,
+        "schema": "https://github.com/citation-style-language/schema/raw/master/csl-citation.json"
+    }, ensure_ascii=False)
+
+
+def build_csl_citation_multi(items, user_id):
+    """Build a multi-item CSL_CITATION JSON payload for grouped citations."""
     citation_items = []
-    for num in citation_nums:
-        key = citation_map.get(str(num))
-        if key is None:
-            raise ValueError(f"No Zotero key for citation #{num}")
-        citation_items.append({
-            "id": num,
-            "uris": [f"http://zotero.org/users/{user_id}/items/{key}"]
-        })
+    for item_key in items:
+        uri = f"http://zotero.org/users/local/{user_id}/items/{item_key}"
+        citation_items.append({"uris": [uri]})
     return json.dumps({
         "citationID": random_citation_id(),
         "properties": {"noteIndex": 0},
@@ -65,23 +97,19 @@ def build_csl_citation(citation_nums, user_id, citation_map):
 
 
 def make_run(xml_str):
-    """Parse an XML fragment into an element."""
     return etree.fromstring(xml_str)
 
 
 def escape_xml(text):
-    """Escape special XML characters."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def create_zotero_field_runs(citation_nums, user_id, citation_map, rPr_xml=None):
+def create_zotero_field(display_text, csl_json, rPr_xml=None, superscript=False):
     """
     Return list of <w:r> elements forming a Zotero ADDIN CSL_CITATION field.
-    Preserves the original rPr formatting for the display run.
+    display_text: the text shown in the document (e.g. "(Kendall and Gal 2017)" or "1")
     """
-    csl_json = build_csl_citation(citation_nums, user_id, citation_map)
     instr_text = f" ADDIN ZOTERO_ITEM CSL_CITATION {csl_json} "
-    display_text = ",".join(str(n) for n in citation_nums)
 
     runs = []
 
@@ -109,7 +137,7 @@ def create_zotero_field_runs(citation_nums, user_id, citation_map, rPr_xml=None)
         '</w:r>'
     ))
 
-    # 4. Display text (superscript numbers, using original rPr if available)
+    # 4. Display text
     if rPr_xml:
         display_rpr = rPr_xml.replace(
             '</w:rPr>',
@@ -121,11 +149,18 @@ def create_zotero_field_runs(citation_nums, user_id, citation_map, rPr_xml=None)
             f'<w:t xml:space="preserve">{escape_xml(display_text)}</w:t>'
             '</w:r>'
         )
-    else:
+    elif superscript:
         display_xml = (
             '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
             '<w:rPr><w:rStyle w:val="ZoteroCitation"/>'
             '<w:vertAlign w:val="superscript"/></w:rPr>'
+            f'<w:t xml:space="preserve">{escape_xml(display_text)}</w:t>'
+            '</w:r>'
+        )
+    else:
+        display_xml = (
+            '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:rPr><w:rStyle w:val="ZoteroCitation"/></w:rPr>'
             f'<w:t xml:space="preserve">{escape_xml(display_text)}</w:t>'
             '</w:r>'
         )
@@ -142,6 +177,11 @@ def create_zotero_field_runs(citation_nums, user_id, citation_map, rPr_xml=None)
     return runs
 
 
+# ── Numeric mode ──────────────────────────────────────────────────────
+
+NUMERIC_RE = re.compile(r'^(\d+(?:\s*,\s*\d+)*)$')
+
+
 def is_superscript_citation_run(r_elem):
     """Check if a <w:r> is a superscript citation (digits + commas only)."""
     rPr = r_elem.find(qn('w:rPr'))
@@ -153,42 +193,14 @@ def is_superscript_citation_run(r_elem):
     t_elem = r_elem.find(qn('w:t'))
     if t_elem is None or t_elem.text is None:
         return False
-    return bool(CITATION_PATTERN.match(t_elem.text.strip()))
+    return bool(NUMERIC_RE.match(t_elem.text.strip()))
 
 
-def get_citation_nums(r_elem):
-    """Extract citation numbers from a run's text."""
-    t_elem = r_elem.find(qn('w:t'))
-    text = t_elem.text.strip()
-    return [int(n.strip()) for n in text.split(',')]
-
-
-def get_rPr_xml(r_elem):
-    """Get the rPr XML string from a run."""
-    rPr = r_elem.find(qn('w:rPr'))
-    if rPr is not None:
-        return etree.tostring(rPr, encoding='unicode')
-    return None
-
-
-# ── Main ────────────────────────────────────────────────────────────────
-
-
-def inject_zotero_fields(input_path, output_path, mapping_path, user_id):
-    """Main injection logic."""
-
-    # Load mapping
-    with open(mapping_path) as f:
-        citation_map = json.load(f)
-    print(f"Loaded {len(citation_map)} citation mappings from {mapping_path}")
-
-    print(f"Opening {input_path} ...")
-    doc = Document(str(input_path))
-    body = doc.element.body
-    total_replaced = 0
+def inject_numeric(body, citation_map, user_id):
+    """Replace superscript numbered citations with Zotero fields."""
+    total = 0
     warnings = []
 
-    # Step 1: Find and replace all superscript citation runs
     for p_elem in body.iter(qn('w:p')):
         runs_to_replace = []
         for r_elem in list(p_elem):
@@ -196,31 +208,196 @@ def inject_zotero_fields(input_path, output_path, mapping_path, user_id):
                 runs_to_replace.append(r_elem)
 
         for r_elem in runs_to_replace:
-            nums = get_citation_nums(r_elem)
-            rPr_xml = get_rPr_xml(r_elem)
-            try:
-                field_runs = create_zotero_field_runs(nums, user_id, citation_map, rPr_xml)
-            except ValueError as e:
-                warnings.append(str(e))
-                continue
+            t_elem = r_elem.find(qn('w:t'))
+            text = t_elem.text.strip()
+            nums = [int(n.strip()) for n in text.split(',')]
 
-            # Replace the original run with field runs
-            parent = r_elem.getparent()
-            idx = list(parent).index(r_elem)
-            parent.remove(r_elem)
-            for i, fr in enumerate(field_runs):
-                parent.insert(idx + i, fr)
+            rPr_xml = etree.tostring(r_elem.find(qn('w:rPr')), encoding='unicode') if r_elem.find(qn('w:rPr')) is not None else None
 
-            total_replaced += 1
-            print(f"  ✓ Replaced citation {','.join(str(n) for n in nums)}")
+            item_keys = []
+            for n in nums:
+                key = citation_map.get(str(n))
+                if key is None:
+                    warnings.append(f"No Zotero key for citation #{n}")
+                    break
+                item_keys.append(key)
+            else:
+                # All found
+                if len(item_keys) == 1:
+                    csl_json = build_csl_citation(item_keys[0], user_id)
+                else:
+                    csl_json = build_csl_citation_multi(item_keys, user_id)
+                display = ",".join(str(n) for n in nums)
+                field_runs = create_zotero_field(display, csl_json, rPr_xml, superscript=True)
 
-    print(f"\nTotal citations replaced: {total_replaced}")
-    if warnings:
-        print(f"Warnings ({len(warnings)}):")
-        for w in warnings:
-            print(f"  ⚠ {w}")
+                parent = r_elem.getparent()
+                idx = list(parent).index(r_elem)
+                parent.remove(r_elem)
+                for i, fr in enumerate(field_runs):
+                    parent.insert(idx + i, fr)
+                total += 1
+                print(f"  ✓ Replaced numeric citation [{display}]")
 
-    # Step 2: Remove the static References section
+    return total, warnings
+
+
+# ── Author-year mode ──────────────────────────────────────────────────
+
+def load_bib_lookup(bib_path):
+    """Build cite_key → {authors: [lastName, ...], year: str} from BIB."""
+    import bibtexparser
+    with open(bib_path, encoding='utf-8') as f:
+        db = bibtexparser.load(f)
+
+    lookup = {}
+    for entry in db.entries:
+        authors = []
+        for a in entry.get('author', '').split(' and '):
+            parts = a.strip().split(',')
+            if parts[0].strip():
+                authors.append(parts[0].strip())
+        lookup[entry['ID']] = {
+            'authors': authors,
+            'year': entry.get('year', ''),
+        }
+    return lookup
+
+
+def match_author_year_text(text, bib_lookup):
+    """
+    Given citation text like "Kendall and Gal 2017" or "Isensee et al 2018",
+    find matching cite_key(s) from bib_lookup.
+    Returns list of cite_keys.
+    """
+    matches = []
+    for cite_key, info in bib_lookup.items():
+        year = info['year']
+        authors = info['authors']
+
+        # Check year present
+        if year and year not in text:
+            continue
+
+        # Check at least one author name present
+        for author in authors:
+            # Handle names with spaces: "Van der Berg" → check whole name
+            if len(author.split()) > 1:
+                # Try last word first (most reliable)
+                last_word = author.split()[-1]
+                if last_word in text:
+                    matches.append(cite_key)
+                    break
+            else:
+                if author in text:
+                    matches.append(cite_key)
+                    break
+
+    return matches
+
+
+def inject_author_year(body, citation_map, user_id, bib_path=None):
+    """Replace author-year citations with Zotero fields.
+
+    pandoc wraps each citation in <w:hyperlink w:anchor="ref-{cite_key}">
+    Group adjacent hyperlinks between ( and ) into a single Zotero field.
+    """
+    total = 0
+    warnings = []
+
+    for p_elem in body.iter(qn('w:p')):
+        children = list(p_elem)
+        i = 0
+        while i < len(children):
+            child = children[i]
+
+            # Look for a run containing '('
+            if child.tag == qn('w:r'):
+                t_elem = child.find(qn('w:t'))
+                if t_elem is not None and t_elem.text and '(' in t_elem.text:
+                    # Collect hyperlinks until we find ')'
+                    cite_keys = []
+                    hyperlink_elems = []
+                    j = i + 1
+                    closing_run = None
+
+                    while j < len(children):
+                        c = children[j]
+                        if c.tag == qn('w:hyperlink'):
+                            anchor = c.get(qn('w:anchor'), '')
+                            if anchor.startswith('ref-'):
+                                ck = anchor[4:]
+                                cite_keys.append(ck)
+                            hyperlink_elems.append(c)
+                            j += 1
+                        elif c.tag == qn('w:r'):
+                            t = c.find(qn('w:t'))
+                            if t is not None and t.text and ')' in t.text:
+                                closing_run = c
+                                break
+                            elif t is not None and t.text and t.text.strip() in (',', ' ', ';'):
+                                # Separator between hyperlinks
+                                hyperlink_elems.append(c)
+                                j += 1
+                            else:
+                                break
+                        else:
+                            break
+
+                    if cite_keys and closing_run is not None:
+                        # Build Zotero item keys
+                        item_keys = []
+                        for ck in cite_keys:
+                            ik = citation_map.get(ck)
+                            if ik:
+                                item_keys.append(ik)
+                            else:
+                                warnings.append(f"No Zotero key for cite_key: {ck}")
+
+                        if item_keys:
+                            # Build display text from hyperlink content
+                            display_parts = []
+                            for hl in hyperlink_elems:
+                                if hl.tag == qn('w:hyperlink'):
+                                    texts = [t.text for t in hl.iter(qn('w:t')) if t.text]
+                                    display_parts.append(''.join(texts))
+                                else:
+                                    t = hl.find(qn('w:t'))
+                                    if t is not None and t.text:
+                                        display_parts.append(t.text.strip())
+                            display = '(' + ', '.join(display_parts) + ')'
+
+                            if len(item_keys) == 1:
+                                csl_json = build_csl_citation(item_keys[0], user_id)
+                            else:
+                                csl_json = build_csl_citation_multi(item_keys, user_id)
+
+                            field_runs = create_zotero_field(display, csl_json, superscript=False)
+
+                            # Remove all elements from ( to )
+                            elems_to_remove = [child] + hyperlink_elems + [closing_run]
+                            parent = child.getparent()
+                            idx = list(parent).index(child)
+
+                            for elem in elems_to_remove:
+                                if elem.getparent() is not None:
+                                    parent.remove(elem)
+
+                            for fi, fr in enumerate(field_runs):
+                                parent.insert(idx + fi, fr)
+
+                            total += 1
+                            print(f"  ✓ Replaced: {display} ({len(item_keys)} items)")
+                            i = idx + len(field_runs)
+                            continue
+            i += 1
+
+    return total, warnings
+
+
+# ── Bibliography + style injection (shared) ───────────────────────────
+
+def remove_references_section(body):
+    """Remove the static References section."""
     refs_heading = None
     for p_elem in body.iter(qn('w:p')):
         texts = [t.text for t in p_elem.iter(qn('w:t')) if t.text]
@@ -229,6 +406,7 @@ def inject_zotero_fields(input_path, output_path, mapping_path, user_id):
             refs_heading = p_elem
             break
 
+    removed = 0
     if refs_heading is not None:
         elems_to_remove = []
         found = False
@@ -239,23 +417,27 @@ def inject_zotero_fields(input_path, output_path, mapping_path, user_id):
                 elems_to_remove.append(child)
         for elem in elems_to_remove:
             body.remove(elem)
-        print(f"Removed {len(elems_to_remove)} elements from References section")
+        removed = len(elems_to_remove)
+        print(f"Removed {removed} elements from References section")
     else:
         print("⚠ No 'References' heading found — skipping removal")
+    return removed
 
-    # Step 3: Add bibliography section with Zotero field placeholder
+
+def add_bibliography_placeholder(body):
+    """Add References heading + ZOTERO_BIBLIOGRAPH field."""
+    # Heading
     ref_heading = etree.SubElement(body, qn('w:p'))
     ref_heading.set(qn('w:rsidR'), '00000000')
     ref_heading.set(qn('w:rsidRDefault'), '00000000')
     pPr = etree.SubElement(ref_heading, qn('w:pPr'))
     pStyle = etree.SubElement(pPr, qn('w:pStyle'))
     pStyle.set(qn('w:val'), 'Heading1')
-    # Add "References" text to the heading
     r_text = etree.SubElement(ref_heading, qn('w:r'))
     t = etree.SubElement(r_text, qn('w:t'))
     t.text = 'References'
 
-    # Bibliography field paragraph
+    # Bibliography field
     bib_para = etree.SubElement(body, qn('w:p'))
     bib_para.set(qn('w:rsidR'), '00000000')
     bib_para.set(qn('w:rsidRDefault'), '00000000')
@@ -270,84 +452,113 @@ def inject_zotero_fields(input_path, output_path, mapping_path, user_id):
     }, ensure_ascii=False)
     bib_instr = f" ADDIN ZOTERO_BIBLIOGRAPH {bib_json} "
 
-    r1 = make_run(
-        '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:fldChar w:fldCharType="begin"/></w:r>'
-    )
-    r2_xml = (
-        '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:instrText xml:space="preserve">{}</w:instrText>'
-        '</w:r>'
-    ).format(escape_xml(bib_instr))
-    r2 = make_run(r2_xml)
-    r3 = make_run(
-        '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:fldChar w:fldCharType="separate"/></w:r>'
-    )
-    r4 = make_run(
-        '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:t xml:space="preserve">[BIBLIOGRAPHY]</w:t></w:r>'
-    )
-    r5 = make_run(
-        '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:fldChar w:fldCharType="end"/></w:r>'
-    )
-    for r in [r1, r2, r3, r4, r5]:
+    field_runs = [
+        make_run('<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                 '<w:fldChar w:fldCharType="begin"/></w:r>'),
+        make_run('<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                 '<w:instrText xml:space="preserve">{}</w:instrText>'
+                 '</w:r>'.format(escape_xml(bib_instr))),
+        make_run('<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                 '<w:fldChar w:fldCharType="separate"/></w:r>'),
+        make_run('<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                 '<w:t xml:space="preserve">[BIBLIOGRAPHY]</w:t></w:r>'),
+        make_run('<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                 '<w:fldChar w:fldCharType="end"/></w:r>'),
+    ]
+    for r in field_runs:
         bib_para.append(r)
-
     print("Added bibliography placeholder")
 
-    # Step 4: Add ZoteroCitation character style to styles.xml if missing
+
+def ensure_zotero_style(doc):
+    """Add ZoteroCitation character style if missing."""
     styles_part = doc.styles.element
-    has_zotero_style = False
     for style in styles_part.iter(qn('w:style')):
         if style.get(qn('w:styleId')) == 'ZoteroCitation':
-            has_zotero_style = True
-            break
+            return
+    zotero_style = make_run(
+        '<w:style xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        ' w:type="character" w:styleId="ZoteroCitation">'
+        '<w:name w:val="ZoteroCitation"/>'
+        '<w:rPr>'
+        '<w:vertAlign w:val="superscript"/>'
+        '</w:rPr>'
+        '</w:style>'
+    )
+    styles_part.append(zotero_style)
+    print("Added ZoteroCitation character style")
 
-    if not has_zotero_style:
-        zotero_style = make_run(
-            '<w:style xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
-            ' w:type="character" w:styleId="ZoteroCitation">'
-            '<w:name w:val="ZoteroCitation"/>'
-            '<w:rPr>'
-            '<w:vertAlign w:val="superscript"/>'
-            '</w:rPr>'
-            '</w:style>'
-        )
-        styles_part.append(zotero_style)
-        print("Added ZoteroCitation character style")
 
-    # Step 5: Save
+# ── Main ──────────────────────────────────────────────────────────────
+
+def inject_zotero_fields(input_path, output_path, mapping_path, user_id,
+                         csl_path=None, bib_path=None):
+    """Main injection logic — auto-selects mode from CSL."""
+
+    # Detect format from CSL
+    cite_format = 'numeric'  # default fallback
+    if csl_path:
+        cite_format = detect_csl_format(csl_path)
+        print(f"CSL format: {cite_format} (from {os.path.basename(csl_path)})")
+
+    # Load mapping
+    with open(mapping_path) as f:
+        citation_map = json.load(f)
+    print(f"Loaded {len(citation_map)} citation mappings")
+
+    # author-date mode: mapping keys should be cite_keys
+    # If mapping is numeric, we can't do hyperlink-based matching
+    # User should provide cite_key mapping from Step 4
+    first_key = next(iter(citation_map))
+    if first_key.isdigit():
+        print("⚠ Mapping uses numeric keys, but author-date mode needs cite_key mapping.")
+        print("  Re-run Step 4 with --output-format cite_key, or provide a cite_key→zotero_key JSON.")
+
+    print(f"Opening {input_path} ...")
+    doc = Document(str(input_path))
+    body = doc.element.body
+
+    # Inject based on format
+    if cite_format == 'author-date':
+        total, warnings = inject_author_year(body, citation_map, user_id, bib_path)
+    elif cite_format == 'numeric':
+        total, warnings = inject_numeric(body, citation_map, user_id)
+    else:
+        # note, label — fall back to numeric
+        print(f"⚠ Format '{cite_format}' not fully supported, trying numeric mode")
+        total, warnings = inject_numeric(body, citation_map, user_id)
+
+    # Post-processing
+    remove_references_section(body)
+    add_bibliography_placeholder(body)
+    ensure_zotero_style(doc)
+
+    # Save
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     print(f"\nSaving to {output} ...")
     doc.save(str(output))
-    print("✓ Done!")
 
-    return total_replaced, len(warnings)
+    print(f"\n{'='*50}")
+    print(f"Result: {total} citations injected, {len(warnings)} warnings")
+    if warnings:
+        for w in warnings[:10]:
+            print(f"  ⚠ {w}")
+    print(f"Open '{output}' in Word with Zotero plugin to refresh bibliography.")
+
+    return total, len(warnings)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Inject Zotero ADDIN CSL_CITATION field codes into a Word document"
+        description="Inject Zotero CSL_CITATION field codes into Word. Auto-detects citation format from CSL."
     )
-    parser.add_argument(
-        '--input', required=True,
-        help='Input Word file (pandoc output with numbered citations)'
-    )
-    parser.add_argument(
-        '--output', required=True,
-        help='Output Word file with Zotero field codes'
-    )
-    parser.add_argument(
-        '--mapping', required=True,
-        help='JSON file mapping citation numbers to Zotero item keys'
-    )
-    parser.add_argument(
-        '--user-id', default='3313474',
-        help='Zotero user ID (default: 3313474)'
-    )
+    parser.add_argument('--input', required=True, help='Input Word file')
+    parser.add_argument('--output', required=True, help='Output Word file')
+    parser.add_argument('--mapping', required=True, help='JSON mapping (number→key or cite_key→key)')
+    parser.add_argument('--csl', required=False, help='CSL style file (auto-detects format)')
+    parser.add_argument('--bib', required=False, help='BibTeX file (required for author-date mode)')
+    parser.add_argument('--user-id', default='0', help='Zotero user ID (default: 0 for local)')
 
     args = parser.parse_args()
 
@@ -356,15 +567,13 @@ def main():
         output_path=args.output,
         mapping_path=args.mapping,
         user_id=args.user_id,
+        csl_path=args.csl,
+        bib_path=args.bib,
     )
 
     if total == 0:
-        print("\n⚠ No citations were replaced. Check if the document uses superscript citation numbers.")
+        print("\n⚠ No citations were replaced.")
         sys.exit(1)
-
-    print(f"\n{'='*50}")
-    print(f"Result: {total} citations injected, {warnings} warnings")
-    print(f"Open '{args.output}' in Word with Zotero plugin to refresh bibliography.")
 
 
 if __name__ == "__main__":
