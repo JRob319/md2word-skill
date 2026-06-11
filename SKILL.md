@@ -103,6 +103,123 @@ def cross_validate(md_path, bib_path):
 - 如果 `missing_in_bib` 不为空 → **暂停，等用户补全 BIB 或修正 cite key**
 - 如果 `no_title` 不为空 → **暂停，等用户补全 title**
 - 其余情况正常继续
+
+**2c. 双来源文献真实性核查**（交叉验证通过后执行）：
+
+对每条 BIB entry 分别用 **Semantic Scholar** 和 **CrossRef** 独立验证，**两个来源都必须确认**才标记通过。
+
+### 核查策略
+
+对每条 entry，按以下逻辑查询两个来源：
+
+```
+来源1: Semantic Scholar
+  - 有 DOI → paper --id "DOI:xxx" --fields title,year,authors
+  - 无 DOI → title-match --query "title" --fields title,year,authors
+
+来源2: CrossRef
+  - 有 DOI → GET https://api.crossref.org/works/{DOI}
+  - 无 DOI → GET https://api.crossref.org/works?query.title={title}&rows=1
+```
+
+### 通过/失败判定
+
+```
+✅ PASS:  两个来源都找到，且信息一致
+⚠️  WARN:  两个来源都找到，但信息有不一致（year/author/title）
+❌ FAIL:  至少一个来源未找到，或两个来源的信息互相矛盾
+⏭  SKIP:  两个来源都未找到（缺 DOI 且 title 太模糊）
+```
+
+### 核查代码
+
+```bash
+# 来源1: Semantic Scholar（使用 s2_api.py）
+uv run scripts/s2_api.py paper \
+  --id "DOI:10.1038/s41586-020-2649-2" \
+  --fields title,year,authors
+
+# 来源2: CrossRef（直接 curl，无需 API key）
+curl -s "https://api.crossref.org/works/10.1038/s41586-020-2649-2" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin)['message'];
+    print(json.dumps({'title': d.get('title',[''])[0],
+                      'year': d.get('published-print',d.get('published-online',{})).get('date-parts',[[None]])[0][0],
+                      'authors': [a.get('family','') for a in d.get('author',[])]}))"
+```
+
+```python
+def dual_verify(bib_entry, s2_result, crossref_result):
+    """双来源交叉核对，返回 (status, issues)"""
+    issues = []
+    s2_ok = s2_result is not None
+    cr_ok = crossref_result is not None
+    bib_title = re.sub(r'[^\w]', '', bib_entry.get('title', '')).lower()
+    bib_year = bib_entry.get('year', '')
+
+    def normalize(t):
+        return re.sub(r'[^\w]', '', t).lower() if t else ''
+
+    # 来源1核对
+    s2_issues = []
+    if s2_ok:
+        if normalize(s2_result.get('title', '')) != bib_title:
+            s2_issues.append(f"S2 title mismatch")
+        s2_year = str(s2_result.get('year', ''))
+        if bib_year and s2_year and s2_year != bib_year:
+            s2_issues.append(f"S2 year: {s2_year} vs BIB: {bib_year}")
+    else:
+        s2_issues.append("S2: 未找到")
+
+    # 来源2核对
+    cr_issues = []
+    if cr_ok:
+        if normalize(crossref_result.get('title', '')) != bib_title:
+            cr_issues.append(f"CR title mismatch")
+        cr_year = str(crossref_result.get('year', ''))
+        if bib_year and cr_year and cr_year != 'None' and cr_year != bib_year:
+            cr_issues.append(f"CR year: {cr_year} vs BIB: {bib_year}")
+    else:
+        cr_issues.append("CR: 未找到")
+
+    # 双来源判定
+    if not s2_ok and not cr_ok:
+        return 'SKIP', ['两个来源均未找到']
+    if not s2_ok or not cr_ok:
+        return 'FAIL', s2_issues + cr_issues  # 单源确认不够
+    if s2_issues or cr_issues:
+        return 'WARN', s2_issues + cr_issues  # 都找到但不一致
+    return 'PASS', []
+```
+
+### 检查点：展示核查报告
+
+```
+双来源文献真实性核查报告
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  核查条目: 50    ✅ PASS: 40    ⚠️ WARN: 5    ❌ FAIL: 2    ⏭ SKIP: 3
+
+❌ FAIL - 至少一个来源未确认 (2):       ← 必须修正
+   - smith2023fake: S2未找到, CR未找到
+   - jones2024typo: S2未找到, CR year=2023 vs BIB=2024
+
+⚠️  WARN - 信息不一致 (5):              ← 需人工确认
+   - kendall2017: S2 year=2017✓, CR year=2018✗
+   - gal2016: S2 author=Gal✓, CR author=Ghahramani✗
+   - wang2020: S2 title轻微差异, CR title一致
+   ...
+
+⏭  SKIP - 两个来源均未找到 (3):          ← 无法验证
+   - someref2024, anotherref2023, oldref2001
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+- **FAIL** → **暂停，必须修正或删除后才能继续**
+- **WARN** → **暂停，展示具体差异，等用户逐条确认**
+- **SKIP** → 正常继续，标记为未验证
+- **PASS** → 自动继续
+
+> **为什么需要双来源**：单一来源可能覆盖不全（S2 偏 CS，CrossRef 偏期刊/书籍），或本身数据有错。两个独立来源都确认，才能可靠判断文献真实存在且信息无误。
+> Semantic Scholar API 需要 `SEMANTIC_SCHOLAR_API_KEY`，CrossRef API 免费无需 key。
 ### Step 3: 导入 BIB → Zotero（如不存在）
 
 先检查目标 collection 是否已存在：
