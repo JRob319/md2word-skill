@@ -166,7 +166,12 @@ python3 scripts/verify_references.py MD_FILE BIB_FILE --verify --json OUTDIR/ver
 
 **3b. 批量导入**：
 - 有 DOI 的条目：创建 `journalArticle` 模板，只填 DOI，Zotero 自动补全元数据
-- 无 DOI 的条目：填入 title、year、authors（从 BIB 解析）
+- 无 DOI 的条目：填入 title、year、authors（从 BIB 解析）。**作者解析规则**：
+  - `and others` → 丢弃（不是真实作者）
+  - `Last, First` 格式 → 直接拆分
+  - `First Last` 格式（无逗号）→ 最后一个词当 lastName，其余当 firstName
+  - `{braced name}` → 去掉外层大括号再解析
+  - 解析失败 → 跳过该条目并在报告中列出，不阻塞流程
 
 **3c. 等待同步**：`sleep 10`，确认 collection 中条目数。
 
