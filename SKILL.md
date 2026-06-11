@@ -64,41 +64,38 @@ pandoc --version | head -1
 
 Zotero 未运行则提示启动后重试。
 
-#### 2b. MD ↔ BIB 交叉验证
+#### 2b + 2c. 交叉验证 + 双来源文献真实性核查
 
-用 `bibtexparser` 解析 BIB，用正则提取 MD 中 `[@key]`，双向校验：
+统一调用 `scripts/verify_references.py`：
 
-| 检查项 | 严重性 | 处理 |
-|--------|--------|------|
-| MD 引用了但 BIB 没有 | ❌ 致命 | 暂停，等用户补全 BIB |
-| BIB 有但 MD 未引用 | ⚠️ 警告 | 报告，可继续 |
-| 匹配条目缺 DOI | ℹ️ 信息 | 将走标题 fallback |
-| 匹配条目缺 title | ❌ 致命 | 暂停，等用户补全 |
+```bash
+# 仅交叉验证（快速）
+python3 scripts/verify_references.py MD_FILE BIB_FILE
 
-**检查点**：展示交叉验证报告，致命问题修复后才继续。
+# 交叉验证 + 双来源核查（完整）
+python3 scripts/verify_references.py MD_FILE BIB_FILE --verify
 
-#### 2c. 双来源文献真实性核查
+# 输出 JSON 供后续步骤使用
+python3 scripts/verify_references.py MD_FILE BIB_FILE --verify --json /tmp/verify_result.json
+```
 
-对每条 entry 用 **Semantic Scholar** 和 **CrossRef** 独立验证，两个来源都必须确认：
-
-**核查方式**：
-- 有 DOI → S2 `paper --id "DOI:xxx"` + CrossRef `GET /works/{DOI}`
-- 无 DOI → S2 `title-match` + CrossRef `query.title={title}`
-
-S2 使用 `scripts/s2_api.py`（需要 `SEMANTIC_SCHOLAR_API_KEY`），CrossRef 直接 curl（免费）。
-
-**对比项**：title（去标点后比较）、year、第一作者姓氏。
+**脚本流程**（`verify_references.py`）：
+1. `bibtexparser` 解析 BIB + 正则提取 MD 引用 `[@key]`
+2. **交叉验证**：`cross_validate()` — missing_in_bib（致命）、unused_in_md（警告）、no_doi/no_title
+3. **双来源核查**：`dual_verify()` — 对 MD 引用的条目查询 S2 + CrossRef
+   - 有 DOI → S2 `paper --id DOI:xxx` + CrossRef `GET /works/{DOI}`
+   - 无 DOI → S2 `title-match` + CrossRef `query.title={title}`
+4. 对比 title（去标点）、year、第一作者姓氏
 
 **判定规则**：
-- ✅ **PASS**：两源都找到且信息一致 → 自动继续
-- ⚠️ **WARN**：两源都找到但有不一致 → 暂停，展示差异等用户确认
-- ❌ **FAIL**：至少一源未找到 → 暂停，必须修正或删除
-- ⏭ **SKIP**：两源均未找到 → 标记未验证，继续
+- ✅ **PASS**：S2 + CR 都找到且信息一致
+- ⚠️ **WARN**：都找到但不一致（暂停，展示差异）
+- ❌ **FAIL**：至少一源未找到（暂停，必须修正）
+- ⏭ **SKIP**：两源均未找到（标记未验证）
 
-**检查点**：展示核查报告，FAIL 必须修复后才继续。
+**检查点**：脚本输出报告后，致命问题需修复才继续。
 
-> **为什么双来源**：S2 偏 CS，CrossRef 偏期刊/书籍，互补覆盖。两源独立确认才可靠。
-
+> S2 需要 `SEMANTIC_SCHOLAR_API_KEY`，CrossRef 免费。找不到 `s2_api.py` 时降级为 CrossRef 单源并提示。
 ---
 
 ### Step 3: 创建 Zotero Collection + 导入已验证文献
