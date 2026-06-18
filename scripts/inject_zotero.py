@@ -296,101 +296,128 @@ def match_author_year_text(text, bib_lookup):
 
 
 def inject_author_year(body, citation_map, user_id, bib_path=None):
-    """Replace author-year citations with Zotero fields.
+    """替换 author-year 引用为 Zotero field。
 
-    pandoc wraps each citation in <w:hyperlink w:anchor="ref-{cite_key}">
-    Group adjacent hyperlinks between ( and ) into a single Zotero field.
-    """
-    total = 0
-    warnings = []
+    优先用 pandoc ``-M link-citations=true`` 产生的 <w:hyperlink w:anchor="ref-{cite_key}">
+    （anchor 直接含 cite_key，**精确，同年同作者无歧义**）。若无 hyperlink（pandoc 未开
+    link-citations），fallback 到文本匹配（用 bib author/year 反查，同年同作者不精确）。"""
+    has_anchor = any((hl.get(qn('w:anchor'), '') or '').startswith('ref-')
+                     for hl in body.iter(qn('w:hyperlink')))
+    if has_anchor:
+        print("  模式: hyperlink anchor (pandoc link-citations:true → 精确)")
+        return _inject_author_year_anchor(body, citation_map, user_id)
+    print("  模式: 文本匹配 fallback（建议 pandoc 加 -M link-citations=true 以精确区分同年同作者）")
+    return _inject_author_year_text(body, citation_map, user_id, bib_path)
 
+
+def _inject_author_year_anchor(body, citation_map, user_id):
+    """anchor 模式：pandoc link-citations 把引用包在 <w:hyperlink w:anchor="ref-{cite_key}">。
+    从 anchor 直接读 cite_key（精确），合并 ( ) 内相邻 hyperlink 为一个 field。
+    用 consumed set 标记已替换元素，避免替换后 DOM 索引错乱漏掉后续引用。"""
+    total, warnings = 0, []
     for p_elem in body.iter(qn('w:p')):
         children = list(p_elem)
-        i = 0
-        while i < len(children):
-            child = children[i]
+        consumed = set()
+        for idx, child in enumerate(children):
+            if id(child) in consumed or child.tag != qn('w:r'):
+                continue
+            t_elem = child.find(qn('w:t'))
+            if not (t_elem is not None and t_elem.text and '(' in t_elem.text):
+                continue
+            cite_keys, elems, closing_run, j = [], [], None, idx + 1
+            while j < len(children):
+                if id(children[j]) in consumed:
+                    j += 1; continue
+                c = children[j]
+                if c.tag == qn('w:hyperlink'):
+                    anchor = c.get(qn('w:anchor'), '') or ''
+                    if anchor.startswith('ref-'):
+                        cite_keys.append(anchor[4:])
+                    elems.append(c); j += 1
+                elif c.tag == qn('w:r'):
+                    t = c.find(qn('w:t'))
+                    if t is not None and t.text and ')' in t.text:
+                        closing_run = c; break
+                    elif t is not None and t.text and t.text.strip() in ('', ',', ';'):
+                        elems.append(c); j += 1  # pandoc 把 ", " 拆成 "," + " " 两个 run，空格 strip 为 ''
+                    else:
+                        break
+                else:
+                    break
+            if not (cite_keys and closing_run is not None):
+                continue
+            item_keys = []
+            for ck in cite_keys:
+                ik = citation_map.get(ck)
+                if ik: item_keys.append(ik)
+                else: warnings.append(f"No Zotero key for cite_key: {ck}")
+            if not item_keys:
+                continue
+            display_parts = [''.join(t.text for t in hl.iter(qn('w:t')) if t.text)
+                             for hl in elems if hl.tag == qn('w:hyperlink')]
+            display = '(' + ', '.join(display_parts) + ')'
+            csl_json = (build_csl_citation(item_keys[0], user_id) if len(item_keys) == 1
+                        else build_csl_citation_multi(item_keys, user_id))
+            field_runs = create_zotero_field(display, csl_json, superscript=False)
+            elems_to_remove = [child] + elems + [closing_run]
+            parent = child.getparent()
+            pos = list(parent).index(child)
+            for elem in elems_to_remove:
+                if elem.getparent() is not None: parent.remove(elem)
+            for fi, fr in enumerate(field_runs):
+                parent.insert(pos + fi, fr)
+            for elem in elems_to_remove:
+                consumed.add(id(elem))
+            total += 1
+            print(f"  ✓ Replaced: {display} ({len(item_keys)} items)")
+    return total, warnings
 
-            # Look for a run containing '('
-            if child.tag == qn('w:r'):
-                t_elem = child.find(qn('w:t'))
-                if t_elem is not None and t_elem.text and '(' in t_elem.text:
-                    # Collect hyperlinks until we find ')'
-                    cite_keys = []
-                    hyperlink_elems = []
-                    j = i + 1
-                    closing_run = None
 
-                    while j < len(children):
-                        c = children[j]
-                        if c.tag == qn('w:hyperlink'):
-                            anchor = c.get(qn('w:anchor'), '')
-                            if anchor.startswith('ref-'):
-                                ck = anchor[4:]
-                                cite_keys.append(ck)
-                            hyperlink_elems.append(c)
-                            j += 1
-                        elif c.tag == qn('w:r'):
-                            t = c.find(qn('w:t'))
-                            if t is not None and t.text and ')' in t.text:
-                                closing_run = c
-                                break
-                            elif t is not None and t.text and t.text.strip() in (',', ' ', ';'):
-                                # Separator between hyperlinks
-                                hyperlink_elems.append(c)
-                                j += 1
-                            else:
-                                break
-                        else:
-                            break
-
-                    if cite_keys and closing_run is not None:
-                        # Build Zotero item keys
-                        item_keys = []
-                        for ck in cite_keys:
-                            ik = citation_map.get(ck)
-                            if ik:
-                                item_keys.append(ik)
-                            else:
-                                warnings.append(f"No Zotero key for cite_key: {ck}")
-
-                        if item_keys:
-                            # Build display text from hyperlink content
-                            display_parts = []
-                            for hl in hyperlink_elems:
-                                if hl.tag == qn('w:hyperlink'):
-                                    texts = [t.text for t in hl.iter(qn('w:t')) if t.text]
-                                    display_parts.append(''.join(texts))
-                                else:
-                                    t = hl.find(qn('w:t'))
-                                    if t is not None and t.text:
-                                        display_parts.append(t.text.strip())
-                            display = '(' + ', '.join(display_parts) + ')'
-
-                            if len(item_keys) == 1:
-                                csl_json = build_csl_citation(item_keys[0], user_id)
-                            else:
-                                csl_json = build_csl_citation_multi(item_keys, user_id)
-
-                            field_runs = create_zotero_field(display, csl_json, superscript=False)
-
-                            # Remove all elements from ( to )
-                            elems_to_remove = [child] + hyperlink_elems + [closing_run]
-                            parent = child.getparent()
-                            idx = list(parent).index(child)
-
-                            for elem in elems_to_remove:
-                                if elem.getparent() is not None:
-                                    parent.remove(elem)
-
-                            for fi, fr in enumerate(field_runs):
-                                parent.insert(idx + fi, fr)
-
-                            total += 1
-                            print(f"  ✓ Replaced: {display} ({len(item_keys)} items)")
-                            i = idx + len(field_runs)
-                            continue
-            i += 1
-
+def _inject_author_year_text(body, citation_map, user_id, bib_path=None):
+    """文本匹配 fallback：pandoc 默认纯文本 (Author Year)，无 hyperlink。合并跨 run 引用
+    文本，用 bib author/year 反查 cite_key。同年同作者不精确（会全匹配上）。"""
+    if not bib_path:
+        print("⚠ 文本匹配需要 --bib")
+        return 0, ["missing --bib"]
+    bib_lookup = load_bib_lookup(bib_path)
+    total, warnings = 0, []
+    for p_elem in body.iter(qn('w:p')):
+        runs = list(p_elem.findall(qn('w:r')))
+        consumed = set()
+        for idx, r in enumerate(runs):
+            if id(r) in consumed: continue
+            t = r.find(qn('w:t'))
+            txt = t.text if (t is not None and t.text) else ''
+            if '(' not in txt: continue
+            group, gtext = [r], txt
+            k = idx + 1
+            while ')' not in gtext and k < len(runs):
+                if id(runs[k]) in consumed: break
+                group.append(runs[k])
+                nt = runs[k].find(qn('w:t'))
+                if nt is not None and nt.text: gtext += nt.text
+                k += 1
+            if ')' not in gtext: continue
+            cites = re.findall(r'\(([^)]+)\)', gtext)
+            if not cites: continue
+            cite_keys = []
+            for c in cites: cite_keys.extend(match_author_year_text(c, bib_lookup))
+            item_keys = [citation_map.get(ck) for ck in cite_keys if citation_map.get(ck)]
+            for ck in cite_keys:
+                if not citation_map.get(ck): warnings.append(f"No Zotero key for cite_key: {ck}")
+            if not item_keys: continue
+            csl_json = (build_csl_citation(item_keys[0], user_id) if len(item_keys) == 1
+                        else build_csl_citation_multi(item_keys, user_id))
+            display = '(' + '; '.join(cites) + ')'
+            field_runs = create_zotero_field(display, csl_json, superscript=False)
+            parent = r.getparent()
+            pos = list(parent).index(group[0])
+            for fr in field_runs: parent.insert(pos, fr); pos += 1
+            for gr in group:
+                consumed.add(id(gr))
+                if gr.getparent() is not None: parent.remove(gr)
+            total += 1
+            print(f"  ✓ Replaced: {display} ({len(item_keys)} items)")
     return total, warnings
 
 
@@ -501,10 +528,18 @@ def inject_zotero_fields(input_path, output_path, mapping_path, user_id,
         cite_format = detect_csl_format(csl_path)
         print(f"CSL format: {cite_format} (from {os.path.basename(csl_path)})")
 
-    # Load mapping
+    # Load mapping（兼容新旧格式：新 {ck:{zotero_key,confidence,...}} / 旧 {ck:key}）
     with open(mapping_path) as f:
-        citation_map = json.load(f)
-    print(f"Loaded {len(citation_map)} citation mappings")
+        raw = json.load(f)
+    citation_map, low_conf = {}, []
+    for k, v in raw.items():
+        if isinstance(v, dict):
+            citation_map[k] = v.get("zotero_key", "")
+            if v.get("confidence") and v["confidence"] != "high":
+                low_conf.append(k)
+        else:
+            citation_map[k] = v
+    print(f"Loaded {len(citation_map)} mappings" + (f" ({len(low_conf)} low-confidence: {low_conf})" if low_conf else ""))
 
     # author-date mode: mapping keys should be cite_keys
     # If mapping is numeric, we can't do hyperlink-based matching

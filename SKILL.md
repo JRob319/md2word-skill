@@ -9,8 +9,8 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 
 - **Markdown 文件**：含 pandoc 风格引用（`[@key]` 或 `[@key1; @key2]`）
 - **BibTeX 文件**：包含所有引用的参考文献（每条最好有 DOI）
-- **Zotero 桌面版**：正在运行（pyzotero 需要本地 API）
-- **依赖**：pandoc 2.11+（`--citeproc`）、pyzotero、python-docx、lxml、bibtexparser
+- **Zotero 桌面版**：正在运行。读取用本地 API；**导入/写入必须用 Web API**（`ZOTERO_API_KEY` + `ZOTERO_USER_ID`，本地 API 不支持写）
+- **依赖**：pandoc 2.11+（`--citeproc`）、pyzotero、python-docx、lxml、bibtexparser；三源核查用 CrossRef + PubMed + OpenAlex（均免费无 key）
 - **内置 CSL 样式**：`styles/` 目录下已有 `physics-in-medicine-and-biology.csl`（dependent）和 `institute-of-physics-harvard.csl`（parent）。默认使用前者，用户指定其他样式时需提供路径或 URL。
 
 ## 工作流程
@@ -24,17 +24,17 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 完整路径（--verify）: Step 1 → 2a+2b+2c → 3 → 4 → 5 → 6  ≈ 100-180s
 ```
 
-- **快速路径**：跳过 Step 2c（双来源文献核查），直接导入。适合信任 BIB 质量的场景。
-- **完整路径**：运行 S2 + CrossRef 双源核查，仅导入 PASS 条目。适合投稿前终审。
+- **快速路径**：跳过 Step 2c（三源核查），直接导入。适合信任 BIB 质量的场景。
+- **完整路径**：运行 CrossRef + PubMed + OpenAlex 三源核查，用权威元数据导入（修正 BIB 错误）。适合投稿前终审。
 - 用户未明确要求时，**默认走快速路径**。
 - 用户说「核查」「验证文献」「verify」时，走完整路径。
 
 | Step | 说明 | 详情文档 |
 |------|------|----------|
 | 1 | 收集参数 & 环境预检 | `docs/step1.md` |
-| 2 | 依赖检查 + 交叉验证 [+ 双源核查] | `docs/step2.md` |
-| 3 | 创建 Zotero Collection + 导入文献 | `docs/step3.md` |
-| 4 | 构建 cite_key → Zotero key 映射 | `docs/step4.md` |
+| 2 | 依赖检查 + 交叉验证 [+ 三源核查与裁决] | `docs/step2.md` |
+| 3 | 创建 Collection + 导入权威元数据 | `docs/step3.md` |
+| 4 | 映射（import 产出，含置信度/审计） | `docs/step4.md` |
 | 5 | pandoc MD → Word | `docs/step5.md` |
 | 6 | 注入 Zotero field codes | `docs/step6.md` |
 
@@ -49,6 +49,7 @@ description: "从 Markdown + BibTeX 生成 Zotero 管理的 Word 文档。将 pa
 - pandoc 需 2.11+（支持 `--citeproc`）
 - 已有 Word 文件只需注入 → 跳过 Step 5，直接 Step 4+6
 - CSL 是工作流核心——决定引用格式、参考文献列表格式、注入策略
+- **导入用权威元数据，不信任 BIB**：Step 3 用 verify 三源裁决后的 CrossRef/PubMed/OpenAlex 数据（修正 BIB 里作者名/年份等错误）。⚠️ 不要用「只填 DOI 让 Zotero 自动补全」——pyzotero（local/Web API）不触发补全，实测得到的是只有 DOI 的残缺条目
 
 ## 边界条件
 
