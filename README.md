@@ -113,8 +113,6 @@ pip install pyzotero python-docx lxml bibtexparser
 | **Local API** | `http://localhost:23119` | **只读** | Step 1b / 2a 检查 collections、读取库（需 Zotero 桌面运行） |
 | **Web API** | `https://api.zotero.org` | **读写** | **Step 3 导入/写入** —— 必需 |
 
-> ⚠️ **关键约束（实测）**：`pyzotero` 的 `local=True` **不支持写操作**——`create_items` 在本地 API 上无效。因此 **Step 3 导入文献必须走 Web API**，需要配置下面两个环境变量。否则导入步骤无法完成。
-
 **配置 Web API 凭证：**
 
 1. **API Key** — 访问 <https://www.zotero.org/settings/keys>，新建一个 key，勾选「Allow library access」+「Allow write access」（导入需要写权限）。
@@ -171,41 +169,7 @@ paper_zotero.docx   # 引用为 Zotero field codes，可 Refresh
 
 ---
 
-## 使用方法
 
-### 作为 Claude Code Skill（推荐）
-
-```
-/md2word <md文件> <bib文件>              # 快速路径（默认）
-/md2word <md文件> <bib文件> --verify     # 完整路径（三源核查，投稿前用）
-```
-
-或自然语言触发：「把 paper.md 转成 Zotero 管理的 Word」「核查一下我的参考文献再转 Word」。
-
-agent 会逐步执行并在终端打印每步进度，**不会静默合并多步**。
-
-### 作为独立 CLI（三个脚本可单独使用）
-
-```bash
-# Step 2：交叉验证（+ 可选三源核查）
-python3 scripts/verify_references.py paper.md refs.bib
-python3 scripts/verify_references.py paper.md refs.bib --verify --json verify_result.json
-
-# Step 3：用权威元数据导入 Zotero
-python3 scripts/import_zotero.py \
-    --verify-json verify_result.json --collection "My Paper" --bib refs.bib
-
-# Step 5：pandoc 转换（务必加 link-citations）
-pandoc paper.md --citeproc -M link-citations=true \
-    --bibliography=refs.bib --csl=styles/physics-in-medicine-and-biology.csl \
-    -o pandoc_output.docx
-
-# Step 6：注入 field codes
-python3 scripts/inject_zotero.py \
-    --input pandoc_output.docx --output paper_zotero.docx \
-    --mapping mapping.json --csl styles/physics-in-medicine-and-biology.csl \
-    --bib refs.bib --user-id 0
-```
 
 ### 输出约定
 
@@ -240,75 +204,13 @@ python3 scripts/inject_zotero.py \
 
 ---
 
-## 脚本参考
-
-### `verify_references.py` — 交叉验证 + 三源核查
-
-MD ↔ BIB 交叉验证，可选启用 CrossRef/PubMed/OpenAlex 三源核查与元数据裁决。
-
-| 参数 | 必需 | 说明 |
-|------|:----:|------|
-| `md_path`（位置参数） | ✅ | Markdown 文件路径 |
-| `bib_path`（位置参数） | ✅ | BibTeX 文件路径 |
-| `--verify` | | 启用三源核查（默认只交叉验证） |
-| `--strict` | | 严格模式：FLAG 也视为阻塞（投稿前终审） |
-| `--json <path>` | | 输出结果 JSON（含裁决后的权威元数据，供 Step 3 使用） |
-
-### `import_zotero.py` — 导入权威元数据到 Zotero
-
-承接 `verify_references.py --json` 输出，用三源裁决后的权威元数据构造完整 Zotero item 并导入指定 collection。
-
-| 参数 | 必需 | 说明 |
-|------|:----:|------|
-| `--verify-json <path>` | ✅ | `verify_references.py --json` 的输出文件 |
-| `--collection <name>` | ✅ | Zotero collection 名称（不存在则创建） |
-| `--bib <path>` | | BibTeX 文件（`--import-skip` 的 fallback 数据源） |
-| `--user-id <id>` | | Zotero User ID，默认读 `$ZOTERO_USER_ID` |
-| `--api-key <key>` | | Zotero API Key，默认读 `$ZOTERO_API_KEY` |
-| `--dry-run` | | 只报告不写入 |
-| `--import-skip` | | SKIP 条目也用 BIB 数据导入并标记「未验证」 |
-| `--output-mapping <path>` | | 输出 cite_key→Zotero key 映射（默认 `verify.json` 同目录 `mapping.json`） |
-
-### `inject_zotero.py` — 注入 Zotero field codes
-
-把 Word 里 pandoc 渲染的引用替换成 Zotero `CSL_CITATION` field codes，并替换静态参考文献节为 `ZOTERO_BIBLIOGRAPH` 占位符。自动从 CSL 检测引用格式。
-
-| 参数 | 必需 | 说明 |
-|------|:----:|------|
-| `--input <docx>` | ✅ | 输入 Word 文件（pandoc 产物） |
-| `--output <docx>` | ✅ | 输出 Word 文件 |
-| `--mapping <json>` | ✅ | JSON 映射（`number→key` 或 `cite_key→key`，含置信度） |
-| `--csl <path>` | | CSL 样式文件（自动检测引用格式） |
-| `--bib <path>` | | BibTeX 文件（author-date 模式必需） |
-| `--user-id <id>` | | Zotero User ID（默认 `0` = 本地） |
-
----
-
 ## CSL 样式与配置
 
 引用格式、参考文献列表格式、注入策略**都由 CSL 决定**，是工作流核心。
 
-- **默认样式**：`styles/physics-in-medicine-and-biology.csl`（PMB，author-date）
-- **依赖样式机制**：PMB 是 *dependent style*，其 parent 是同目录的 `styles/institute-of-physics-harvard.csl`。pandoc 会自动解析，无需额外配置。
-- **换用其他样式**：提供 CSL 文件路径或 URL 即可。换 numeric 期刊（如 IEEE）时，Step 5/6 会自动检测 `citation-format` 并切换到编号注入策略。
+- **默认样式**：`styles/xxx.csl`（PMB，author-date）, pandoc 会自动解析，无需额外配置。
+- **换用其他样式**：提供 CSL 文件路径或 URL 即可。换 numeric 期刊（如 IEEE）时，Step 5/6 会自动检测 `citation-format` 并切换到编号注入策略; 或者先默认csl完整整个过程后，在zotero里选其他的样式
 - **CSL 缺失**：列出 `styles/` 下已有样式并提示用户下载。
-
----
-
-## 边界条件与故障排查
-
-| 情况 | 处理 |
-|------|------|
-| BIB 非 UTF-8（如 GBK） | `iconv -f GBK -t UTF-8` 转码后处理 |
-| MD 无 `[@key]` 引用标记 | 跳过 Step 4–6，仅 pandoc 转换 |
-| Collection 为空 | 提示先导入，暂停 |
-| `cite_key` 重复 | 取最后一条，报告中标注 |
-| 条目既无 DOI 也无 title | 无法匹配，报告并请用户指定 |
-| CSL 是 dependent 但找不到 parent | 报错 |
-| CSL 文件不存在 | 列出已有样式，提示下载 |
-| 映射不完整 | 跳过未映射引用，输出警告 |
-| Zotero 未运行 | 提示启动后重试（Local API 不可用） |
-| 缺 `ZOTERO_API_KEY` / `ZOTERO_USER_ID` | 提示手动导入 BIB 到 Collection，确认后继续 |
 
 ---
 
@@ -337,14 +239,6 @@ md2word-skill/
 
 ---
 
-## 已知限制
-
-- **Local API 不支持写** — `pyzotero` 的 `local=True` 实测无法 `create_items`，导入必须走 Web API（需 `ZOTERO_API_KEY` + `ZOTERO_USER_ID`）。
-- **不要用「只填 DOI 让 Zotero 自动补全」的旧思路** — pyzotero（无论 local 还是 Web API）创建只含 DOI 的 item **不会触发** Zotero 客户端的元数据自动补全，实测得到的是只有 DOI 的残缺条目。必须用 `verify_references` 的权威数据构造完整 payload。
-- **`-M link-citations=true` 必加** — Step 5 pandoc 转换时必须带此参数，否则引用不会渲染成 `w:hyperlink`，Step 6 只能退回文本匹配，同年同作者的多篇文献会误关联。
-- **FLAG 条目需人工复核** — 完整路径下 FLAG 条目虽已用最优值导入，但冲突记录在 Zotero `Extra` 字段，投稿前应逐条过目。
-
----
 
 ## License
 
