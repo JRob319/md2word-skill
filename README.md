@@ -113,10 +113,10 @@ git clone https://github.com/JRob319/md2word-skill.git ~/.kiro/skills/md2word-sk
 
 | 依赖 | 版本 | 用途 | 安装 |
 |------|------|------|------|
-| **pandoc** | ≥ 3.6 | → Word（`--citeproc`，`.md` / `.tex` / `.typ` 输入） | [pandoc.org/installing](https://pandoc.org/installing.html) 或 `apt install pandoc` / `brew install pandoc` |
+| **pandoc** | ≥ 3.6 | → Word（`--citeproc`，`.md` / `.tex` / `.typ` 输入） | [pandoc.org/installing](https://pandoc.org/installing.html)<br>`winget install pandoc` / `pacman -S pandoc` / `apt install pandoc` / `brew install pandoc` |
 | **Zotero 桌面版** | 任意 | 文献库，运行中 | [zotero.org/download](https://www.zotero.org/download/) |
-| **typst** | ≥ 0.12 | **可选**：`.typ` → PDF | [typst.app](https://typst.app/) 或 `cargo install typst-cli` / `brew install typst` |
-| **Python** | ≥ 3.8 | 运行三个脚本 | [python.org](https://www.python.org/) 或系统自带 / `apt install python3` / `brew install python` |
+| **typst** | ≥ 0.12 | **可选**：`.typ` → PDF | [typst.app](https://typst.app/)<br>`pacman -S typst` / `winget install typst` / `cargo install typst-cli` / `brew install typst` |
+| **Python** | ≥ 3.8 | 运行三个脚本 | [python.org](https://www.python.org/)<br>`winget install Python.Python` / `pacman -S python` / `apt install python3` / `brew install python` |
 
 Python 包（推荐用 uv 创建隔离环境）：
 
