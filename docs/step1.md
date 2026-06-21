@@ -6,11 +6,13 @@
 
 从用户指令中提取参数，未提供的填默认值，然后**打印参数汇总表**：
 
+输入文件支持 `.md`（pandoc `[@key]` 引用）和 `.tex`（`\cite{}`/`\citep{}`/`\citet{}` 等）。
+
 ```text
 ═══════════════════════════════════════
   md2word 参数确认
 ═══════════════════════════════════════
-  MD 文件:        /path/to/paper.md
+  输入文件:       /path/to/paper.md  （或 paper.tex）
   BIB 文件:       /path/to/references.bib
   CSL 样式:       physics-in-medicine-and-biology
                    → citation-format: author-date
@@ -26,7 +28,7 @@
 
 | 参数 | 必需 | 默认值 | 缺失时 |
 |------|------|--------|--------|
-| md_file | ✅ | — | **暂停，询问文件路径** |
+| input_file | ✅ | — | **暂停，询问文件路径**（`.md` 或 `.tex`） |
 | bib_file | ✅ | — | **暂停，询问文件路径** |
 | collection | — | BIB 文件名去掉扩展名 | 静默使用默认 |
 | output | — | `OUTDIR/<md文件名>_zotero.docx` | 静默使用默认 |
@@ -41,9 +43,9 @@
 
 ```bash
 # 检查文件存在
-ls -la MD_FILE BIB_FILE
-# 统计 MD 引用数
-grep -c '\[@' MD_FILE
+ls -la INPUT_FILE BIB_FILE
+# 统计引用数（MD 用 [@，LaTeX 用 \cite）
+grep -c '\[@'  INPUT_FILE  2>/dev/null || grep -c '\\cite' INPUT_FILE
 # 统计 BIB 条目数
 grep -c '^@' BIB_FILE
 # 检查 CSL 并显示 citation-format

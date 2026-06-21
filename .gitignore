@@ -9,3 +9,17 @@ __pycache__/
 # Virtual envs
 .venv/
 venv/
+
+# Local test files
+refs.bib
+test_paper.md
+test_paper.tex
+test_paper.typ
+
+# Build outputs / test artifacts
+pandoc_output*.docx
+*_zotero.docx
+mapping.json
+verify_result.json
+*.pdf
+*.aux *.bbl *.bcf *.blg *.fdb_latexmk *.fls *.log *.out *.run.xml *.synctex.gz *.toc *.dvi

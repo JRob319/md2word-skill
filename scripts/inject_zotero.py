@@ -296,80 +296,130 @@ def match_author_year_text(text, bib_lookup):
 
 
 def inject_author_year(body, citation_map, user_id, bib_path=None):
-    """替换 author-year 引用为 Zotero field。
-
-    优先用 pandoc ``-M link-citations=true`` 产生的 <w:hyperlink w:anchor="ref-{cite_key}">
-    （anchor 直接含 cite_key，**精确，同年同作者无歧义**）。若无 hyperlink（pandoc 未开
-    link-citations），fallback 到文本匹配（用 bib author/year 反查，同年同作者不精确）。"""
+    """替换 author-year 引用为 Zotero field。"""
+    bib_lookup = load_bib_lookup(bib_path) if bib_path else {}
     has_anchor = any((hl.get(qn('w:anchor'), '') or '').startswith('ref-')
                      for hl in body.iter(qn('w:hyperlink')))
     if has_anchor:
         print("  模式: hyperlink anchor (pandoc link-citations:true → 精确)")
-        return _inject_author_year_anchor(body, citation_map, user_id)
+        return _inject_author_year_anchor(body, citation_map, user_id, bib_lookup)
     print("  模式: 文本匹配 fallback（建议 pandoc 加 -M link-citations=true 以精确区分同年同作者）")
     return _inject_author_year_text(body, citation_map, user_id, bib_path)
 
 
-def _inject_author_year_anchor(body, citation_map, user_id):
-    """anchor 模式：pandoc link-citations 把引用包在 <w:hyperlink w:anchor="ref-{cite_key}">。
-    从 anchor 直接读 cite_key（精确），合并 ( ) 内相邻 hyperlink 为一个 field。
-    用 consumed set 标记已替换元素，避免替换后 DOM 索引错乱漏掉后续引用。"""
+def _hl_to_cite_key(hl_elem, citation_map, bib_lookup):
+    """从 hyperlink 元素解析 cite_key。
+    优先用 ref-* anchor（精确）；fallback 用 hyperlink 文本反查 bib（处理组合引用第2+项的哈希 anchor）。
+    """
+    anchor = hl_elem.get(qn('w:anchor'), '') or ''
+    if anchor.startswith('ref-'):
+        return anchor[4:]
+    # 哈希 anchor：用文本内容（如 "Karaoz and Brodie 2022"）反查 bib
+    text = ''.join(t.text for t in hl_elem.iter(qn('w:t')) if t.text)
+    matches = match_author_year_text(text, bib_lookup) if bib_lookup else []
+    return matches[0] if matches else None
+
+
+def _inject_author_year_anchor(body, citation_map, user_id, bib_lookup=None):
+    """anchor 模式：处理三种 pandoc 输出结构：
+    1. \\citep 单项:   run('(') + hyperlink(ref-*) + run(')')
+    2. \\citep 组合:   run('(') + hyperlink(ref-*) + run(',') + hyperlink(hash) + ... + run(')')
+    3. \\citet:        run('Author') + run('et al') + run('(') + hyperlink(ref-*，只含年份) + run(')')
+       → 需向前收集作者 run，合并成完整 field
+    """
     total, warnings = 0, []
     for p_elem in body.iter(qn('w:p')):
         children = list(p_elem)
         consumed = set()
+
         for idx, child in enumerate(children):
-            if id(child) in consumed or child.tag != qn('w:r'):
+            if id(child) in consumed:
                 continue
-            t_elem = child.find(qn('w:t'))
-            if not (t_elem is not None and t_elem.text and '(' in t_elem.text):
-                continue
-            cite_keys, elems, closing_run, j = [], [], None, idx + 1
-            while j < len(children):
-                if id(children[j]) in consumed:
-                    j += 1; continue
-                c = children[j]
-                if c.tag == qn('w:hyperlink'):
-                    anchor = c.get(qn('w:anchor'), '') or ''
-                    if anchor.startswith('ref-'):
-                        cite_keys.append(anchor[4:])
-                    elems.append(c); j += 1
-                elif c.tag == qn('w:r'):
-                    t = c.find(qn('w:t'))
-                    if t is not None and t.text and ')' in t.text:
-                        closing_run = c; break
-                    elif t is not None and t.text and t.text.strip() in ('', ',', ';'):
-                        elems.append(c); j += 1  # pandoc 把 ", " 拆成 "," + " " 两个 run，空格 strip 为 ''
+
+            # ── 情况 1 & 2：run 含 '(' 开启 citep 组 ──
+            if child.tag == qn('w:r'):
+                t_elem = child.find(qn('w:t'))
+                if not (t_elem is not None and t_elem.text and '(' in t_elem.text):
+                    continue
+                cite_keys, elems, closing_run, j = [], [], None, idx + 1
+                while j < len(children):
+                    if id(children[j]) in consumed:
+                        j += 1; continue
+                    c = children[j]
+                    if c.tag == qn('w:hyperlink'):
+                        ck = _hl_to_cite_key(c, citation_map, bib_lookup)
+                        if ck:
+                            cite_keys.append(ck)
+                        elems.append(c); j += 1
+                    elif c.tag == qn('w:r'):
+                        t = c.find(qn('w:t'))
+                        txt = (t.text or '') if t is not None else ''
+                        if ')' in txt:
+                            closing_run = c; break
+                        elif txt.strip() in ('', ',', ';'):
+                            elems.append(c); j += 1
+                        else:
+                            break
                     else:
                         break
+                if not (cite_keys and closing_run is not None):
+                    continue
+                # 向前收集 \citet 的作者 run（紧邻 '(' run 之前的纯文本 run）
+                author_runs = []
+                k = idx - 1
+                while k >= 0 and id(children[k]) not in consumed:
+                    c = children[k]
+                    if c.tag != qn('w:r'):
+                        break
+                    t = c.find(qn('w:t'))
+                    txt = (t.text or '').strip() if t is not None else ''
+                    if txt == '' or re.match(r'^[A-Za-zÀ-ÿ\-\s\.]+$', txt):
+                        author_runs.insert(0, c)
+                        k -= 1
+                    else:
+                        break
+
+                item_keys = []
+                for ck in cite_keys:
+                    ik = citation_map.get(ck)
+                    if ik:
+                        item_keys.append(ik)
+                    else:
+                        warnings.append(f"No Zotero key for cite_key: {ck}")
+                if not item_keys:
+                    continue
+
+                hl_texts = [''.join(t.text for t in hl.iter(qn('w:t')) if t.text)
+                            for hl in elems if hl.tag == qn('w:hyperlink')]
+                author_prefix = ''.join(
+                    (c.find(qn('w:t')).text or '') for c in author_runs
+                    if c.find(qn('w:t')) is not None
+                ).rstrip()
+                if author_prefix:
+                    # \citet: "Author et al (Year)" → display = "Author et al (Year)"
+                    display = author_prefix + ' (' + ', '.join(hl_texts) + ')'
                 else:
-                    break
-            if not (cite_keys and closing_run is not None):
-                continue
-            item_keys = []
-            for ck in cite_keys:
-                ik = citation_map.get(ck)
-                if ik: item_keys.append(ik)
-                else: warnings.append(f"No Zotero key for cite_key: {ck}")
-            if not item_keys:
-                continue
-            display_parts = [''.join(t.text for t in hl.iter(qn('w:t')) if t.text)
-                             for hl in elems if hl.tag == qn('w:hyperlink')]
-            display = '(' + ', '.join(display_parts) + ')'
-            csl_json = (build_csl_citation(item_keys[0], user_id) if len(item_keys) == 1
-                        else build_csl_citation_multi(item_keys, user_id))
-            field_runs = create_zotero_field(display, csl_json, superscript=False)
-            elems_to_remove = [child] + elems + [closing_run]
-            parent = child.getparent()
-            pos = list(parent).index(child)
-            for elem in elems_to_remove:
-                if elem.getparent() is not None: parent.remove(elem)
-            for fi, fr in enumerate(field_runs):
-                parent.insert(pos + fi, fr)
-            for elem in elems_to_remove:
-                consumed.add(id(elem))
-            total += 1
-            print(f"  ✓ Replaced: {display} ({len(item_keys)} items)")
+                    display = '(' + ', '.join(hl_texts) + ')'
+
+                csl_json = (build_csl_citation(item_keys[0], user_id) if len(item_keys) == 1
+                            else build_csl_citation_multi(item_keys, user_id))
+                field_runs = create_zotero_field(display, csl_json, superscript=False)
+
+                elems_to_remove = author_runs + [child] + elems + [closing_run]
+                parent = child.getparent()
+                # 插入位置：author_runs 存在时从 author_runs[0] 前，否则从 child 前
+                anchor_elem = author_runs[0] if author_runs else child
+                pos = list(parent).index(anchor_elem)
+                for elem in elems_to_remove:
+                    if elem.getparent() is not None:
+                        parent.remove(elem)
+                for fi, fr in enumerate(field_runs):
+                    parent.insert(pos + fi, fr)
+                for elem in elems_to_remove:
+                    consumed.add(id(elem))
+                total += 1
+                print(f"  ✓ Replaced: {display} ({len(item_keys)} items)")
+
     return total, warnings
 
 
@@ -424,16 +474,16 @@ def _inject_author_year_text(body, citation_map, user_id, bib_path=None):
 # ── Bibliography + style injection (shared) ───────────────────────────
 
 def remove_references_section(body):
-    """Remove the static References section."""
+    """Remove the static References section.
+    策略1: 找 'References' 标题，删除其后所有内容（MD 输入）。
+    策略2: 找 Bibliography 样式段落，删除所有连续段（LaTeX/pandoc 输入，无标题）。
+    """
+    # 策略1: heading
     refs_heading = None
     for p_elem in body.iter(qn('w:p')):
-        texts = [t.text for t in p_elem.iter(qn('w:t')) if t.text]
-        full_text = ''.join(texts).strip()
-        if full_text == 'References':
+        if ''.join(t.text for t in p_elem.iter(qn('w:t')) if t.text).strip() == 'References':
             refs_heading = p_elem
             break
-
-    removed = 0
     if refs_heading is not None:
         elems_to_remove = []
         found = False
@@ -444,11 +494,31 @@ def remove_references_section(body):
                 elems_to_remove.append(child)
         for elem in elems_to_remove:
             body.remove(elem)
-        removed = len(elems_to_remove)
-        print(f"Removed {removed} elements from References section")
-    else:
-        print("⚠ No 'References' heading found — skipping removal")
-    return removed
+        print(f"Removed {len(elems_to_remove)} elements from References section")
+        return len(elems_to_remove)
+
+    # 策略2: Bibliography 样式段落
+    bib_paras = []
+    for p_elem in body:
+        if p_elem.tag != qn('w:p'):
+            continue
+        pPr = p_elem.find(qn('w:pPr'))
+        style = ''
+        if pPr is not None:
+            ps = pPr.find(qn('w:pStyle'))
+            if ps is not None:
+                style = ps.get(qn('w:val'), '')
+        if style == 'Bibliography':
+            bib_paras.append(p_elem)
+
+    if bib_paras:
+        for elem in bib_paras:
+            body.remove(elem)
+        print(f"Removed {len(bib_paras)} Bibliography paragraphs")
+        return len(bib_paras)
+
+    print("⚠ No References section found — skipping removal")
+    return 0
 
 
 def add_bibliography_placeholder(body):

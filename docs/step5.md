@@ -1,8 +1,14 @@
-# Step 5: pandoc MD → Word
+# Step 5: pandoc 输入文件 → Word
+
+支持 `.md` 和 `.tex` 两种输入，pandoc 自动根据扩展名识别格式：
 
 ```bash
-pandoc INPUT.md --citeproc -M link-citations=true --bibliography=REFERENCES.bib --csl=CSL_PATH -o OUTDIR/pandoc_output.docx
+pandoc INPUT_FILE --citeproc -M link-citations=true --bibliography=REFERENCES.bib --csl=CSL_PATH -o OUTDIR/pandoc_output.docx
 ```
+
+`.tex` 输入时 pandoc 会识别 `\cite{}`/`\citep{}`/`\citet{}` 等命令，与 MD 的 `[@key]` 等价处理。
+
+> **注意**：pandoc 对复杂 LaTeX（自定义宏、`tikz`、复杂表格）支持有限，内容会尽力转换但格式可能需要手动调整。结构性内容（正文、引用）通常无问题。
 
 `CSL_PATH` 默认为本 skill 的 `styles/physics-in-medicine-and-biology.csl`。它是 dependent style，pandoc 会自动在同目录找到 parent `institute-of-physics-harvard.csl`。
 

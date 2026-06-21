@@ -91,11 +91,12 @@ def _ast_citation_ids(obj):
 
 
 def extract_md_keys(md_path):
-    """提取 MD 中所有引用的 cite_key（含组合引用各项），按出现顺序去重。
+    """提取 MD、LaTeX 或 Typst 中所有引用的 cite_key，按出现顺序去重。
 
-    主路径: pandoc AST（``pandoc md -t json`` → Cite.citationId）—— 结构化真相，一次性
-    免疫组合引用 / 前缀修饰(-@) / 嵌套 / 语法变体等所有正则难以覆盖的情况。
-    fallback: 正则（pandoc 不可用时）。"""
+    MD/Typst: 主路径 pandoc AST（Cite.citationId），fallback 正则 @key / [@key]
+    LaTeX:    主路径 pandoc AST，fallback 正则 \\cite{}/\\citep{} 等
+    """
+    ext = os.path.splitext(md_path)[1].lower()
     keys = []
     try:
         r = subprocess.run(["pandoc", md_path, "-t", "json"],
@@ -107,11 +108,23 @@ def extract_md_keys(md_path):
     if not keys:  # pandoc 失败 → 正则 fallback
         with open(md_path, encoding="utf-8") as f:
             text = f.read()
-        for block in re.findall(r"\[@([^\]]+)\]", text):
-            for part in re.split(r"[;,]", block):
-                part = part.strip().lstrip("-")
-                m = re.match(r"@?([\w][\w-]*)", part)
-                if m:
+        if ext == ".tex":
+            for block in re.findall(r"\\cite\w*\*?(?:\[[^\]]*\]){0,2}\{([^}]+)\}", text):
+                for part in re.split(r",", block):
+                    part = part.strip()
+                    if part:
+                        keys.append(part)
+        else:
+            # MD 和 Typst 都用 @key 语法
+            for block in re.findall(r"\[@([^\]]+)\]", text):
+                for part in re.split(r"[;,]", block):
+                    part = part.strip().lstrip("-")
+                    m = re.match(r"@?([\w][\w-]*)", part)
+                    if m:
+                        keys.append(m.group(1))
+            # Typst 裸 @key（不在 [] 内）
+            if ext == ".typ":
+                for m in re.finditer(r"(?<!\[)@([\w][\w-]*)", text):
                     keys.append(m.group(1))
     seen = {}
     for k in keys:

@@ -1,12 +1,12 @@
 # md2word-skill
 
-> **Markdown + BibTeX → Zotero 管理的 Word 文档**：把 pandoc 风格引用 `[@key]` 转成 Zotero `CSL_CITATION` field codes，让引用变成「活的」——由 Zotero 统一管理，可随时自动更新引用格式与参考文献列表。
+> **Markdown / LaTeX / Typst + BibTeX → Zotero 管理的 Word 文档**：把 pandoc 风格引用 `[@key]`、LaTeX `\cite{key}` 或 Typst `@key` 转成 Zotero `CSL_CITATION` field codes，让引用变成「活的」——由 Zotero 统一管理，可随时自动更新引用格式与参考文献列表。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-blue)](#)
-[![Requires](https://img.shields.io/badge/requires-Claude%20Code%20%7C%20pandoc%202.11%2B%20%7C%20Zotero-orange)](#前置条件与安装)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL%20%7C%20Windows-blue)](#)
+[![Requires](https://img.shields.io/badge/requires-Claude%20Code%20%7C%20Kiro%20%7C%20pandoc%202.11%2B%20%7C%20Zotero-orange)](#前置条件与安装)
 
-一个 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) Skill，专为「用 Markdown 写论文、用 Zotero 管文献、最终要交一份 Word」的科研写作工作流设计。
+一个支持 Claude Code、Kiro CLI 等 70+ AI 工具的 Skill，专为「用 Markdown / LaTeX / Typst 写论文、用 Zotero 管文献、最终要交一份 Word」的科研写作工作流设计。
 
 ---
 
@@ -28,12 +28,14 @@
 
 ## 核心特性
 
-- **🔗 Zotero field-code 注入** — 把 `[@key]` 转成 `CSL_CITATION`，引用由 Zotero 统一管理，可在 Word 内 Refresh
+- **🔗 Zotero field-code 注入** — 把 `[@key]`/`\cite{key}` 转成 `CSL_CITATION`，引用由 Zotero 统一管理，可在 Word 内 Refresh
+- **📄 三输入格式** — 支持 Markdown（`[@key]`）、LaTeX（`\cite{}`/`\citep{}`/`\citet{}` 等所有变体）以及 **Typst**（`@key` + `#bibliography()`）
 - **🛡️ 三源元数据裁决** — CrossRef / PubMed / OpenAlex 交叉核对，用权威数据修正 BIB 错误（不信任 BIB）
 - **📊 置信度审计** — 每个 cite_key→Zotero 映射标注 `high/medium/low` 置信度与锚点（DOI / 标题 / bib），便于人工复核
 - **📑 CSL 驱动** — 内置 `physics-in-medicine-and-biology`（PMB）样式，支持任意 CSL；自动识别 `author-date / numeric / note` 三种引用格式并选对应注入策略
-- **⚡ 双路径** — 快速路径（信任 BIB，~40s）与完整路径（三源核查，~100–180s）按需切换
-- **🤖 Claude Code 原生** — 输入 `/md2word` 由 agent 自动编排 6 步流程；三个脚本亦可作为独立 CLI 使用
+- **⚡ 双路径** — 快速路径（BIB 已在 Zotero，本地 API 直接建映射，~20s）与完整路径（三源核查后导入，~100–180s）按需切换
+- **🔨 Makefile 支持** — `make all` 同时生成 PDF（xelatex）和 Word；`make typ-pdf` 用 `typst compile` 生成 Typst PDF；`make word-typ` 走 Typst → docx → Zotero 注入
+- **🤖 多 AI 工具原生** — Claude Code 输入 `/md2word`，Kiro 切换 `/agent md2word`；`npx skills add` 一键安装
 
 ---
 
@@ -41,7 +43,7 @@
 
 ```mermaid
 flowchart TD
-    IN["Markdown（含 @key 引用）<br/>+ BibTeX 参考文献库"]
+    IN["Markdown（@key）/ LaTeX（\\cite）/ Typst（@key）<br/>+ BibTeX 参考文献库"]
     IN --> S1["Step 1 · 参数确认 & 环境预检<br/>MD / BIB / CSL / Zotero 连通性"]
     S1 --> S2a["Step 2a · 依赖检查<br/>pandoc / pyzotero"]
     S2a --> S2b["Step 2b · MD ↔ BIB 交叉验证"]
@@ -69,11 +71,11 @@ flowchart TD
 
 | Step | 说明 | 详情 |
 |------|------|------|
-| 1 | 收集参数 & 环境预检（MD/BIB/CSL/Zotero 连通性） | [`docs/step1.md`](./docs/step1.md) |
-| 2 | 依赖检查 + MD↔BIB 交叉验证 [+ 三源核查与裁决] | [`docs/step2.md`](./docs/step2.md) |
+| 1 | 收集参数 & 环境预检（MD/TEX/TYP/BIB/CSL/Zotero 连通性） | [`docs/step1.md`](./docs/step1.md) |
+| 2 | 依赖检查 + ↔BIB 交叉验证 [+ 三源核查与裁决] | [`docs/step2.md`](./docs/step2.md) |
 | 3 | 创建 Collection + 导入权威元数据 | [`docs/step3.md`](./docs/step3.md) |
 | 4 | 映射 cite_key → Zotero key（含置信度/审计） | [`docs/step4.md`](./docs/step4.md) |
-| 5 | pandoc MD → Word（`--citeproc`） | [`docs/step5.md`](./docs/step5.md) |
+| 5 | pandoc → Word（`--citeproc`，支持 `.md` / `.tex` / `.typ`） | [`docs/step5.md`](./docs/step5.md)（Typst 需 pandoc ≥ 3.6） |
 | 6 | 注入 Zotero field codes | [`docs/step6.md`](./docs/step6.md) |
 
 ---
@@ -82,41 +84,68 @@ flowchart TD
 
 ### 1. 安装 Skill
 
-将本仓库克隆到 Claude Code 的 skills 目录：
+**推荐：使用 [npx skills](https://github.com/vercel-labs/skills)（自动检测已安装的 AI 工具并 symlink）**
 
 ```bash
-git clone https://github.com/luciliang/md2word-skill.git ~/.claude/skills/md2word-skill
+# 全局安装（所有项目可用）
+npx skills add JRob319/md2word-skill -g
+
+# 仅安装到指定 agent
+npx skills add JRob319/md2word-skill -g -a claude-code
+npx skills add JRob319/md2word-skill -g -a kiro-cli
 ```
 
-重启 Claude Code，输入 `/md2word` 即可触发。
+支持 Claude Code、Kiro CLI、Cursor、Codex 等 70+ 个 AI 工具，自动识别已安装的 agent。
+
+**手动安装：**
+
+```bash
+# Claude Code
+git clone https://github.com/JRob319/md2word-skill.git ~/.claude/skills/md2word-skill
+
+# Kiro CLI
+git clone https://github.com/JRob319/md2word-skill.git ~/.kiro/skills/md2word-skill
+```
+
+重启 AI 工具后即可触发（Claude Code 输入 `/md2word`，Kiro 切换 `/agent md2word`）。
 
 ### 2. 系统依赖
 
 | 依赖 | 版本 | 用途 | 安装 |
 |------|------|------|------|
-| **pandoc** | ≥ 2.11 | MD → Word（`--citeproc`） | `brew install pandoc` |
+| **pandoc** | ≥ 3.6 | → Word（`--citeproc`，`.md` / `.tex` / `.typ` 输入） | [pandoc.org/installing](https://pandoc.org/installing.html) 或 `apt install pandoc` / `brew install pandoc` |
 | **Zotero 桌面版** | 任意 | 文献库，运行中 | [zotero.org/download](https://www.zotero.org/download/) |
-| **Python** | ≥ 3.8 | 运行三个脚本 | 系统自带 / `brew install python` |
+| **typst** | ≥ 0.12 | **可选**：`.typ` → PDF | [typst.app](https://typst.app/) 或 `cargo install typst-cli` / `brew install typst` |
+| **Python** | ≥ 3.8 | 运行三个脚本 | [python.org](https://www.python.org/) 或系统自带 / `apt install python3` / `brew install python` |
 
-Python 包：
+Python 包（推荐用 uv 创建隔离环境）：
 
 ```bash
+# 推荐：uv（隔离环境，首次 bash run.sh 自动完成）
+cd md2word-skill && uv venv .venv && uv pip install -r pyproject.toml
+
+# 或者 pip
 pip install pyzotero python-docx lxml bibtexparser
 ```
 
-### 3. Zotero API：Local 与 Web（关键）
-
-本 skill 同时用到 Zotero 的两套 API，**职责不同，缺一不可**：
+### 3. Zotero API：Local 与 Web
 
 | API | 端点 | 权限 | 在本 skill 的角色 |
 |-----|------|------|-------------------|
-| **Local API** | `http://localhost:23119` | **只读** | Step 1b / 2a 检查 collections、读取库（需 Zotero 桌面运行） |
-| **Web API** | `https://api.zotero.org` | **读写** | **Step 3 导入/写入** —— 必需 |
+| **Local API** | `http://localhost:23119` | **只读** | 检查 collections、读取库、建映射（需 Zotero 桌面运行） |
+| **Web API** | `https://api.zotero.org` | **读写** | **可选**：仅完整路径（BIB 未导入 Zotero 时）需要 |
 
-**配置 Web API 凭证：**
+**快速路径**（BIB 从 Zotero 导出）：只需本地 API，无需配置 Web API。
 
-1. **API Key** — 访问 <https://www.zotero.org/settings/keys>，新建一个 key，勾选「Allow library access」+「Allow write access」（导入需要写权限）。
-2. **User ID** — 在同一页面（<https://www.zotero.org/settings/keys>）底部可见「*Your userID for use in API calls is XXXXXX*」。**注意这是数字 ID，不是用户名。**
+**完整路径**（BIB 来自外部，需三源核查后导入）：需配置 Web API 凭证：
+
+1. 访问 <https://www.zotero.org/settings/keys>，新建 key，勾选「Allow library access」+「Allow write access」
+2. 同页面底部获取数字 User ID
+
+```bash
+export ZOTERO_API_KEY="你的API Key"
+export ZOTERO_USER_ID="你的数字 User ID"
+```
 
 写入 shell 配置（`~/.zshrc` / `~/.bashrc`）：
 
@@ -131,17 +160,31 @@ export ZOTERO_USER_ID="你的数字 User ID"
 
 ## 快速开始
 
-准备两个文件——一个含 pandoc 引用的 Markdown，一个 BibTeX：
+准备两个文件——一个含引用的 Markdown / LaTeX / Typst，一个 BibTeX：
 
-**`paper.md`**（节选）：
+**`paper.md`**（Markdown 风格）：
 ```markdown
 # 引言
 
-Optimal Transport Conditional Flow Matching (OT-CFM) 已被证明
+Optimal Transport Conditional Flow Matching 已被证明
 能有效学习概率路径 [@lipman2023flow; @tong2023flow]。
+```
 
-# 方法
-...
+**`paper.tex`**（LaTeX 风格）：
+```latex
+\section{引言}
+Optimal Transport Conditional Flow Matching 已被证明
+能有效学习概率路径 \citep{lipman2023flow, tong2023flow}。
+```
+
+**`paper.typ`**（Typst 风格）：
+```typst
+= 引言
+
+Optimal Transport Conditional Flow Matching 已被证明
+能有效学习概率路径 @lipman2023flow @tong2023flow。
+
+#bibliography("refs.bib")
 ```
 
 **`refs.bib`**（节选）：
@@ -153,19 +196,30 @@ Optimal Transport Conditional Flow Matching (OT-CFM) 已被证明
 }
 ```
 
-在 Claude Code 里：
+在 Claude Code / Kiro 里：
 
 ```
-/md2word paper.md refs.bib
+/md2word paper.tex refs.bib
 ```
 
-agent 会逐项确认参数 → 检查环境 → 交叉验证 → 导入 Zotero → 生成映射 → pandoc 转换 → 注入 field codes，最终产出：
+或者直接用 Makefile（修改 `TEXFILE` / `TYPFILE` / `BIBFILE` 变量后）：
+
+```bash
+make all        # 同时生成 LaTeX PDF + Word
+make word       # LaTeX 转 Word
+make pdf        # LaTeX → PDF（latexmk -xelatex）
+make typ-pdf    # Typst → PDF（typst compile）
+make word-typ   # Typst 转 Word → Zotero 注入
+```
+
+最终产出：
 
 ```
 paper_zotero.docx   # 引用为 Zotero field codes，可 Refresh
+paper.pdf           # xelatex 编译的 PDF
 ```
 
-用 Word 打开，所有引用都已绑定 Zotero 库，点 Zotero 插件的 **Refresh** 即可重渲染。
+用 Word/WPS 打开 docx，所有引用都已绑定 Zotero 库，点 Zotero 插件的 **Refresh** 重渲染引用，**Add Bibliography** 插入参考文献列表。
 
 ---
 
@@ -174,8 +228,8 @@ paper_zotero.docx   # 引用为 Zotero field codes，可 Refresh
 ### 输出约定
 
 - 所有中间文件与最终产物默认写到 **MD/BIB 所在目录**（`OUTDIR`）
-- 最终文件名：`<md文件名>_zotero.docx`
-- 中间产物：`verify_result.json`、`mapping.json`、`pandoc_output.docx`
+- 最终文件名：`<文件名>_zotero.docx`（LaTeX）、`<文件名>_typ_zotero.docx`（Typst）、`<文件名>_md_zotero.docx`（Markdown）
+- 中间产物：`verify_result.json`、`mapping.json`、`pandoc_output.docx`（LaTeX）、`pandoc_output_typ.docx`（Typst）、`pandoc_output_md.docx`（Markdown）
 
 ---
 
@@ -218,19 +272,26 @@ paper_zotero.docx   # 引用为 Zotero field codes，可 Refresh
 
 ```
 md2word-skill/
-├── SKILL.md                      # Skill 入口（Claude Code 加载）：流程总览 + 渐进式读取约定
+├── SKILL.md                      # Skill 入口（AI 加载）：流程总览 + 渐进式读取约定
 ├── README.md                     # 本文档
 ├── LICENSE                       # MIT
+├── Makefile                      # make all/pdf/word/word-typ/typ-pdf/clean/cleanall
+├── pyproject.toml                # Python 依赖声明（uv/pip）
+├── run.sh                        # Linux/macOS/WSL 脚本入口（自动激活 .venv）
+├── run.bat                       # Windows 原生脚本入口
+├── test_paper.md                 # 测试用 Markdown 文件
+├── test_paper.tex                # 测试用 LaTeX 文件
+├── test_paper.typ                # 测试用 Typst 文件
 ├── docs/
 │   ├── step1.md                  # Step 1: 参数确认 & 环境预检
 │   ├── step2.md                  # Step 2: 依赖检查 + 交叉验证 + 三源核查
 │   ├── step3.md                  # Step 3: 创建 Collection + 导入权威元数据
 │   ├── step4.md                  # Step 4: cite_key → Zotero key 映射（含置信度）
-│   ├── step5.md                  # Step 5: pandoc MD → Word
+│   ├── step5.md                  # Step 5: pandoc 输入文件 → Word
 │   └── step6.md                  # Step 6: 注入 Zotero field codes
 ├── scripts/
-│   ├── verify_references.py      # 交叉验证 + 三源核查与裁决
-│   ├── import_zotero.py          # 用权威元数据导入 Zotero
+│   ├── verify_references.py      # 交叉验证 + 三源核查与裁决（支持 .md/.tex）
+│   ├── import_zotero.py          # 用权威元数据导入 Zotero（完整路径）
 │   └── inject_zotero.py          # 注入 CSL_CITATION field codes
 └── styles/
     ├── physics-in-medicine-and-biology.csl   # 默认 CSL（dependent）
@@ -242,4 +303,4 @@ md2word-skill/
 
 ## License
 
-[MIT](./LICENSE) © 2026 luciliang
+[MIT](./LICENSE) © 2026 luciliang, JRob319
