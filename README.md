@@ -121,10 +121,14 @@ git clone https://github.com/JRob319/md2word-skill.git ~/.kiro/skills/md2word-sk
 Python 包（推荐用 uv 创建隔离环境）：
 
 ```bash
+# 安装 uv（包管理器）
+pip install uv                              # 类 Unix 系统自带 Python（通过 pip 安装）
+curl -LsSf https://astral.sh/uv/install.sh | sh  # 或独立安装
+
 # 推荐：uv（隔离环境，首次 bash run.sh 自动完成）
 cd md2word-skill && uv venv .venv && uv pip install -r pyproject.toml
 
-# 或者 pip
+# 或者直接用 pip
 pip install pyzotero python-docx lxml bibtexparser
 ```
 
