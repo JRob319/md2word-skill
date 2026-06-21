@@ -118,6 +118,8 @@ git clone https://github.com/JRob319/md2word-skill.git ~/.kiro/skills/md2word-sk
 | **typst** | ≥ 0.12 | **可选**：`.typ` → PDF | [typst.app](https://typst.app/)<br>`pacman -S typst` / `winget install typst` / `cargo install typst-cli` / `brew install typst` |
 | **Python** | ≥ 3.8 | 运行三个脚本 | [python.org](https://www.python.org/)<br>`winget install Python.Python` / `pacman -S python` / `apt install python3` / `brew install python` |
 
+> **⚠️ Windows 用户**：`run.bat` 为参考脚本，**未经测试**。`winget` 安装可能受网络环境影响。建议使用 WSL 或手动按步骤执行命令。
+
 Python 包（推荐用 uv 创建隔离环境）：
 
 ```bash
@@ -288,7 +290,7 @@ md2word-skill/
 ├── Makefile                      # make all/pdf/word/word-typ/typ-pdf/clean/cleanall
 ├── pyproject.toml                # Python 依赖声明（uv/pip）
 ├── run.sh                        # Linux/macOS/WSL 脚本入口（自动激活 .venv）
-├── run.bat                       # Windows 原生脚本入口
+├── run.bat                       # Windows 原生脚本入口 ⚠️ 未经测试
 ├── test_paper.md                 # 测试用 Markdown 文件
 ├── test_paper.tex                # 测试用 LaTeX 文件
 ├── test_paper.typ                # 测试用 Typst 文件
