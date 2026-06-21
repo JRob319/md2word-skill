@@ -225,7 +225,7 @@ paper_zotero.docx   # 引用为 Zotero field codes，可 Refresh
 paper.pdf           # xelatex 编译的 PDF
 ```
 
-用 Word/WPS 打开 docx，所有引用都已绑定 Zotero 库，点 Zotero 插件的 **Refresh** 重渲染引用，**Add Bibliography** 插入参考文献列表。
+用 Word/WPS 打开 docx（需已安装对应的 [Zotero 插件](https://www.zotero.org/download/connectors)），所有引用都已绑定 Zotero 库，点 Zotero 插件的 **Refresh** 重渲染引用，**Add Bibliography** 插入参考文献列表。
 
 ---
 
