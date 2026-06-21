@@ -128,7 +128,13 @@ cd md2word-skill && uv venv .venv && uv pip install -r pyproject.toml
 pip install pyzotero python-docx lxml bibtexparser
 ```
 
-### 3. Zotero API：Local 与 Web
+### 3. Zotero 配置
+
+**开启本地 API：**
+
+Zotero → 编辑 / 菜单栏 → 设置 → 高级 → 常规 → 勾选 **「允许此计算机上的其他应用程序与 Zotero 通讯」**，否则本地 API 不可用。
+
+### 4. Zotero API：Local 与 Web
 
 | API | 端点 | 权限 | 在本 skill 的角色 |
 |-----|------|------|-------------------|
